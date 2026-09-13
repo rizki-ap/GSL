@@ -19,6 +19,7 @@ Documentation about devices involved
 
 *Note: the raw multimeter voltage/resistance readings that led to this conclusion were not carried forward in memory — only the final resistor values and topology. If you have the original readings, they can be reconciled against the JFET bias point below.*
 
+<img src="connector-mic.jpeg" alt="Connector" width="200">
 ---
 
 ## 2. Generic Assumed 4-Pin Structure (initial working hypothesis, before confirmation above)
