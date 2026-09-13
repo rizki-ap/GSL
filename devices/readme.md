@@ -1,5 +1,7 @@
 Documentation about devices involved
 
+https://github.com/rizki-ap/Gunshot-Locator/blob/main/devices/Mic-PilarV.jpeg
+
 # PILAR V — Microphone AFE (Analog Front-End) Notes
 
 ## 1. Confirmed Mic Hardware (from multimeter reverse-engineering)
