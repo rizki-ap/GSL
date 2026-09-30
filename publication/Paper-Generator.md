@@ -40,7 +40,9 @@ That covers the core physics cleanly. Ready to move to **Section 3 — Signal Ge
 ### 3.1 System Overview
 The generator takes as input a set of **scene parameters** — bullet caliber, muzzle velocity, shooter position, bullet trajectory direction, and microphone array geometry — and produces a set of **per-sensor time-domain waveforms** at a specified sample rate. The pipeline proceeds in three stages: (i) geometric computation of event origins and per-sensor propagation delays, (ii) synthesis of the canonical N-wave and Friedlander waveforms, and (iii) rendering each waveform onto the per-sensor timeline with appropriate delay, amplitude scaling, and noise. For subsonic configurations, Stage (ii) produces only the Friedlander muzzle blast; the shockwave stage is bypassed.
 A summary of the full pipeline is shown in Fig. 1.
-https://github.com/rizki-ap/GSL/blob/main/publication/GSL-generator.png
+
+<img src="GSL-generator.png" alt="Connector" width="240">
+
 ### 3.2 Input Parameterization
 The generator is parameterized by the following inputs:
 | Parameter | Symbol | Description |
