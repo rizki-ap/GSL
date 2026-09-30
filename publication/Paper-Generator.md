@@ -1,4 +1,4 @@
-Here's a tighter version scoped only to generation and Zenodo validation:
+Gunshot Audio Signal Generator using analytical physics model and validation
 ---
 ## 1. Introduction
 
