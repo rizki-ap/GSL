@@ -155,7 +155,7 @@ Eight inputs. Everything else is computed.
 
 The minimal viable call for a single supersonic shot with a 4-sensor array is therefore six numbers for geometry ($\mathbf{x}_s$ and $\hat{\mathbf{u}}$), twelve for the array ($4 \times 3$ sensor positions), two for the bullet ($d$, $v_b$), one for the environment ($T$), and one for the output ($f_s$) — twenty-two scalars total.
 
-Want to continue to **Section 4 — Validation against the Zenodo dataset**?
+---
 
 ### 3.3 Geometric Computation
 #### 3.3.1 Shockwave Apparent Origin
