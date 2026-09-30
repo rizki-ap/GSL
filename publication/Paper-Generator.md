@@ -71,6 +71,92 @@ The generator is parameterized by the following inputs:
 | Sample rate | $f_s$ | Output sample rate (Hz) |
 
 The speed of sound $c$ is derived from $T$ as in Section 2.4. The Mach number $M = v_b / c$ determines whether the shockwave component is active. For $M \leq 1$ only the muzzle blast is synthesized.
+
+## Scene Parameters — Full Breakdown
+
+These are the complete inputs to the generator. Every quantity that follows — delays, waveform shapes, amplitudes, TDOAs — is derived from these alone.
+
+---
+
+### Bullet Parameters
+
+**Calibre $d$ (metres)**
+The projectile diameter. Feeds directly into the N-wave scaling — both peak overpressure and positive phase duration scale with $d$. In practice you supply a named calibre (9 mm, .223, .308) and the generator converts to metres.
+
+**Muzzle velocity $v_b$ (m/s)**
+The bullet's speed as it exits the barrel. Together with the ambient speed of sound $c$, this determines the Mach number $M = v_b / c$. If $M \leq 1$ the shockwave branch is bypassed entirely — the generator produces only the Friedlander muzzle blast, as with the 9 mm subsonic case in the Zenodo dataset.
+
+---
+
+### Source Geometry
+
+**Shooter position $\mathbf{x}_s \in \mathbb{R}^3$**
+The 3D Cartesian coordinates of the muzzle in metres. This is the fixed origin of the muzzle blast and the starting point of the bullet ray. All sensor ranges are measured from here.
+
+**Bullet direction $\hat{\mathbf{u}} \in \mathbb{R}^3$**
+A unit vector giving the direction of bullet travel. Used to construct the bullet ray $\mathbf{x}_s + \lambda\hat{\mathbf{u}}$, from which all shockwave apparent origins are projected. Azimuth and elevation angles are the natural parameterisation — the generator converts to a unit vector internally.
+
+---
+
+### Array Geometry
+
+**Sensor positions $\{\mathbf{x}_i\} \in \mathbb{R}^{N \times 3}$**
+The 3D Cartesian coordinates of all $N$ microphones. This is the only parameter that describes the receiver side. The geometry can be arbitrary — planar, volumetric, irregular — the generator makes no assumptions about array shape. For the Zenodo validation a known fixed array geometry is loaded from the dataset metadata.
+
+---
+
+### Environmental Parameter
+
+**Ambient temperature $T$ (Kelvin)**
+Used to compute the speed of sound:
+
+$$c = 331.3\sqrt{\frac{T}{273.15}} \;\text{m/s}$$
+
+This single scalar propagates into every timing and scaling expression in the pipeline. A 10 °C change shifts $c$ by roughly 6 m/s, which at 50 m range produces a ~1 ms timing error — significant relative to the sub-millisecond TDOA precision required for accurate localisation. For the Zenodo recordings, $T$ is taken from the dataset's logged ambient conditions.
+
+---
+
+### Signal Parameters
+
+**Sample rate $f_s$ (Hz)**
+The output sample rate. Determines the temporal resolution of the synthesised waveforms and hence the finest TDOA that can be represented. At 44.1 kHz, one sample corresponds to ~23 µs or ~8 mm of acoustic path — sufficient for metre-scale localisation. Higher rates (96 kHz, 192 kHz) are used when sub-centimetre TDOA precision is needed.
+
+**SNR (dB)**
+The signal-to-noise ratio for the additive white Gaussian noise floor added to each channel. Set to match the estimated noise floor of the Zenodo recordings during validation; swept across a range for robustness experiments.
+
+---
+
+### Weapon-specific Constants (calibrated, not free parameters)
+
+**Effective TNT equivalent $W$ (kg)**
+Used in Hopkinson–Cranz scaling for the muzzle blast. Calibrated once per weapon class from reference recordings at known range — not a free parameter at synthesis time.
+
+**N-wave scaling constants $K_p$, $K_T$**
+Empirical multipliers in the Whitham pressure and duration expressions. Also calibrated per calibre from reference data.
+
+---
+
+### Summary Table
+
+| Parameter | Symbol | Unit | Drives |
+|---|---|---|---|
+| Calibre | $d$ | m | N-wave amplitude, duration |
+| Muzzle velocity | $v_b$ | m/s | Mach number, shockwave on/off |
+| Shooter position | $\mathbf{x}_s$ | m | All ranges and delays |
+| Bullet direction | $\hat{\mathbf{u}}$ | — | Shockwave apparent origins |
+| Sensor positions | $\{\mathbf{x}_i\}$ | m | Per-sensor delays, TDOAs |
+| Temperature | $T$ | K | Speed of sound $c$ |
+| Sample rate | $f_s$ | Hz | Waveform discretisation |
+| SNR | — | dB | Noise floor |
+
+Eight inputs. Everything else is computed.
+
+---
+
+The minimal viable call for a single supersonic shot with a 4-sensor array is therefore six numbers for geometry ($\mathbf{x}_s$ and $\hat{\mathbf{u}}$), twelve for the array ($4 \times 3$ sensor positions), two for the bullet ($d$, $v_b$), one for the environment ($T$), and one for the output ($f_s$) — twenty-two scalars total.
+
+Want to continue to **Section 4 — Validation against the Zenodo dataset**?
+
 ### 3.3 Geometric Computation
 #### 3.3.1 Shockwave Apparent Origin
 The shockwave heard at sensor $i$ originates from the point along the bullet trajectory where the Mach cone intersects the sensor's perpendicular. This apparent origin $\mathbf{x}_{sw,i}$ is the foot of the perpendicular from $\mathbf{x}_i$ to the bullet ray:
@@ -134,3 +220,153 @@ The generator is implemented in Python using NumPy for array operations and SciP
 ---
 
 Ready to continue to **Section 4 — Validation Against the Zenodo Dataset**, which covers the GCC-PHAT TDOA estimation results and waveform morphology comparison against real recordings?
+
+Here's the full derivation behind Section 3.5.
+
+## Friedlander Muzzle Blast Synthesis
+
+### The Friedlander Waveform
+
+The muzzle blast pressure time-history at a sensor is modelled as a **Friedlander pulse** — the standard far-field approximation for a spherically expanding blast wave:
+
+$$p(t) = \Delta p_0 \left(1 - \frac{t}{T^+}\right) e^{-t/T^+}, \quad t \geq 0$$
+
+This waveform has three phases:
+1. **Instantaneous shock front** — pressure jumps to $\Delta p_0$ at $t = 0$
+2. **Positive phase** — pressure decays through zero at $t = T^+$
+3. **Negative phase** — underpressure tail for $t > T^+$ before returning to ambient
+
+Both $\Delta p_0$ (peak overpressure) and $T^+$ (positive phase duration) depend on **range** from the muzzle to the sensor. This is where Hopkinson–Cranz enters.
+
+---
+
+### Hopkinson–Cranz Scaling
+
+The core insight of Hopkinson–Cranz (H–C) is that blast wave parameters depend on range and charge size only through a single **scaled distance**:
+
+$$Z = \frac{r}{W^{1/3}}$$
+
+where $r$ is the standoff range in metres and $W$ is the explosive charge equivalent in kg TNT. This means a 1 kg charge at 10 m produces the same waveform shape as an 8 kg charge at 20 m (same $Z = 10$).
+
+From empirical blast tables, both parameters are expressed as functions of $Z$ alone:
+
+$$\Delta p_0 = f_{\Delta p}(Z) \quad \text{[Pa]}$$
+
+$$T^+ = f_{T^+}(Z) \cdot W^{1/3} \quad \text{[s]}$$
+
+The $W^{1/3}$ factor in the duration expression is the dimensional un-scaling — once you know the shape from $Z$, you scale time back up by $W^{1/3}$ to get absolute duration.
+
+---
+
+### Practical Implementation
+
+For a gunshot, you don't know $W$ directly — it isn't a controlled detonation. Instead, $W$ is treated as an **effective TNT equivalent** that is fit empirically per weapon class from reference recordings. For example:
+
+| Weapon | Calibre | Effective $W$ (g TNT-eq) |
+|---|---|---|
+| Glock 17 | 9 mm | ~0.8 g |
+| Ruger 10/22 | .22 LR | ~0.2 g |
+| AR-15 | 5.56 mm | ~2.5 g |
+
+These values are calibrated once against measured recordings at a known range, then held fixed. At synthesis time the pipeline:
+
+1. Computes range to each sensor $i$: $r_i = \|\mathbf{x}_i - \mathbf{x}_s\|$
+2. Computes scaled distance: $Z_i = r_i / W^{1/3}$
+3. Looks up $\Delta p_{0,i} = f_{\Delta p}(Z_i)$ and $T^+_i = f_{T^+}(Z_i) \cdot W^{1/3}$ from piecewise polynomial fits to tabulated H–C data (Kingery–Bulmash or equivalent)
+4. Synthesises the Friedlander waveform sample-by-sample at $f_s$
+5. Places it at sample index $\lfloor \tau_{mb,i} \cdot f_s \rceil$ on the sensor timeline
+
+---
+
+### Key Behaviours This Captures
+
+- **Range decay**: $\Delta p_0$ drops roughly as $r^{-1}$ in the far field (embedded in $f_{\Delta p}$)
+- **Pulse stretching**: $T^+$ grows with range — the blast broadens as it propagates
+- **Per-sensor variation**: sensors at different ranges see different amplitudes and durations, which is physically correct and important for waveform-shape validation
+
+### What It Does Not Model
+
+- Directional radiation pattern of the muzzle (the blast is treated as omnidirectional)
+- Ground reflections and multipath
+- Atmospheric turbulence and wind
+
+These are first-order omissions that are acceptable for the Zenodo validation, where sensors are at moderate range on open ground.
+
+---
+
+In short: H–C scaling lets you parameterise the entire range-dependent muzzle blast with a single weapon-specific constant $W$, calibrated once from data. That's the key simplification that makes the synthesis computationally tractable.
+
+Want me to continue to **Section 4 — Validation**, or elaborate on how $W$ is calibrated from the Zenodo recordings?
+
+## Geometric Computation — Stage I in Detail
+
+This stage takes the scene parameters and resolves all spatial relationships before any waveform is synthesised. It has three jobs: find where each acoustic event *appears to come from*, compute how long it takes to reach each sensor, and produce the ground-truth TDOA labels.
+
+---
+
+### Job 1 — Shockwave Apparent Origin per Sensor
+
+The shockwave is not a point source. It radiates continuously from every point along the bullet's flight path. What a sensor *hears* is the wavefront that was emitted from the specific point on the trajectory where the Mach cone intersects the sensor's perpendicular — the **foot of the perpendicular** from the sensor to the bullet ray.
+
+Given shooter position $\mathbf{x}_s$ and bullet direction unit vector $\hat{\mathbf{u}}$, the apparent origin for sensor $i$ is:
+
+$$\mathbf{x}_{sw,i} = \mathbf{x}_s + \underbrace{\left[(\mathbf{x}_i - \mathbf{x}_s) \cdot \hat{\mathbf{u}}\right]}_{\text{scalar projection}} \hat{\mathbf{u}}$$
+
+This is a straightforward vector projection — you project the sensor's position onto the bullet ray and find the closest point. Three quantities follow immediately:
+
+$$r_{\perp,i} = \|\mathbf{x}_i - \mathbf{x}_{sw,i}\| \quad \text{(perpendicular standoff distance)}$$
+
+$$\tau_{sw,i} = \frac{r_{\perp,i}}{c} \quad \text{(shockwave propagation delay to sensor } i \text{)}$$
+
+Note that $r_{\perp,i}$ also feeds directly into the N-wave amplitude and duration expressions in Stage II — it is not just a timing quantity.
+
+---
+
+### Job 2 — Muzzle Blast Origin (trivial but important)
+
+The muzzle blast originates from a fixed point: the shooter position $\mathbf{x}_s$. Unlike the shockwave, there is no apparent-origin calculation — the source is always the muzzle.
+
+$$\tau_{mb,i} = \frac{\|\mathbf{x}_i - \mathbf{x}_s\|}{c}$$
+
+This simplicity is why muzzle blast TDOAs are so useful for localisation — the geometry is clean.
+
+---
+
+### Job 3 — Absolute Timing and TDOA Labels
+
+A global time reference $t_0 = 0$ is set at the moment of discharge. Every per-sensor delay is expressed relative to this. The shockwave arrives at sensor $i$ at $t_0 + \tau_{sw,i}$, the muzzle blast at $t_0 + \tau_{mb,i}$.
+
+The inter-sensor TDOAs are then:
+
+$$\Delta\tau_{ij}^{sw} = \tau_{sw,i} - \tau_{sw,j} \qquad \text{(shockwave TDOA, sensors } i \text{ and } j\text{)}$$
+
+$$\Delta\tau_{ij}^{mb} = \tau_{mb,i} - \tau_{mb,j} \qquad \text{(muzzle blast TDOA)}$$
+
+These are written out as **ground-truth labels** — the exact values the GCC-PHAT estimator will later be compared against during Zenodo validation.
+
+---
+
+### One Non-obvious Detail — Ordering Guarantee
+
+For any supersonic shot ($M > 1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
+
+---
+
+### Output of Stage I
+
+| Quantity | Shape | Used by |
+|---|---|---|
+| $r_{\perp,i}$ | $N \times 1$ | N-wave amplitude/duration (Stage II) |
+| $\tau_{sw,i}$ | $N \times 1$ | Waveform placement (Stage III) |
+| $\tau_{mb,i}$ | $N \times 1$ | Waveform placement (Stage III) |
+| $\Delta\tau_{ij}^{sw}$ | $N \times N$ | Ground-truth labels |
+| $\Delta\tau_{ij}^{mb}$ | $N \times N$ | Ground-truth labels |
+
+All of these are computed analytically in a few lines of NumPy — Stage I has no iterative solver, no approximation, and no failure mode. It is the most reliable part of the pipeline.
+
+---
+
+The one assumption baked in here is that the bullet travels in a straight line at constant velocity — no drag, no drop. For the ranges involved in the Zenodo dataset (tens of metres) this is a very good approximation.
+
+Ready to continue to **Section 4 — Validation**, or shall we go back to finishing Section 3?
+
