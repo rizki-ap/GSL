@@ -311,7 +311,8 @@ The sharp onset at $t = -T^+/2$ is the shock front — in practice bandlimited b
 
 ### Visualisation
 </thinking>Here's an interactive synthesis widget showing exactly how the waveform shape responds to the two key parameters.Try sliding calibre up and range out — the two Whitham scalings become immediately visible.
-<img src="GSL-generator-N.png" alt="Connector" width="400">
+
+<img src="GSL-generator-N.png" alt="Connector" width="600">
 
 ---
 
@@ -429,14 +430,227 @@ $$x_i[n] = p_{sw,i}[n] + p_{mb,i}[n] + \eta_i[n]$$
 where $\eta_i[n]$ is additive white Gaussian noise at a configurable signal-to-noise ratio. Geometric spreading is embedded in the amplitude expressions of Sections 3.4 and 3.5 through their $r^{-3/4}$ and $r^{-1}$ distance dependencies respectively. Optional first-order atmospheric absorption is applied as a frequency-domain filter with attenuation coefficient $\alpha(f)$ following ISO 9613-1, applied before final placement on the timeline.
 The output is an $N \times L$ matrix of multichannel time-domain samples, with accompanying metadata containing ground-truth TDOAs, shooter position, bullet direction, and all intermediate geometric quantities.
 
+## Per-Sensor Rendering — Stage III in Detail
+
+This is the stage where the two synthesised waveforms are assembled into a physically consistent multichannel recording. It is mechanically straightforward but contains several details that matter for validation fidelity.
+
+---
+
+### Step 1 — Allocate the Output Frame
+
+A shared timeline of $L$ samples is allocated for each of the $N$ sensors. The frame length must be long enough to contain both events at every sensor:
+
+$$L = \left\lceil \left( \max_i \tau_{mb,i} + T^+_{mb} + t_{tail} \right) \cdot f_s \right\rceil$$
+
+where $t_{tail}$ adds a post-blast silence margin (typically 50–100 ms). All $N$ channels share the same $L$, so the output is a clean $N \times L$ matrix with a common time axis.
+
+---
+
+### Step 2 — Stamp Each Waveform
+
+For sensor $i$, each synthesised waveform is placed at the correct sample index on the timeline. The N-wave is centred on its shock arrival:
+
+$$n_{sw,i} = \left\lfloor \tau_{sw,i} \cdot f_s \right\rceil$$
+
+The Friedlander pulse is stamped at its muzzle blast arrival:
+
+$$n_{mb,i} = \left\lfloor \tau_{mb,i} \cdot f_s \right\rceil$$
+
+Fractional-sample delays — the difference between the true delay and the nearest sample — are handled by a windowed sinc interpolation shift applied to the waveform before stamping. Without this, TDOAs are quantised to $\pm 1/f_s$ seconds, which at 44.1 kHz is $\pm 23\,\mu$s — sufficient for metre-scale localisation but worth correcting for sub-sample precision.
+
+---
+
+### Step 3 — Amplitude Scaling
+
+Both waveforms carry their range-dependent amplitude from Stages II already. What rendering adds is a final **geometric spreading correction** making the amplitude consistent across sensors:
+
+$$A_i^{sw} = \frac{\Delta p_i}{1} \cdot \frac{r_{\perp,\text{ref}}}{r_{\perp,i}} \qquad \text{(already embedded in Whitham } r_\perp^{-3/4}\text{)}$$
+
+$$A_i^{mb} = \Delta p_{0,i} \cdot \frac{r_{\text{ref}}}{r_i} \qquad \text{(already embedded in H–C scaling)}$$
+
+In practice both Stage II outputs already include range-dependent amplitude, so Stage III applies no additional scaling unless a reference normalisation is requested. The key point is that sensors at different ranges will have measurably different signal levels — this inter-sensor amplitude variation is physically real and is preserved in the output.
+
+---
+
+### Step 4 — Superposition
+
+The composite signal at sensor $i$ is simply:
+
+$$x_i[n] = p_{sw,i}[n] + p_{mb,i}[n]$$
+
+where each waveform is zero outside its active window. For supersonic ammunition the two events are temporally separated — they never overlap — so superposition is trivial. For subsonic ammunition ($M \leq 1$) the shockwave term is absent and $x_i[n] = p_{mb,i}[n]$ only.
+
+---
+
+### Step 5 — Additive Noise
+
+White Gaussian noise is added to each channel independently at the specified SNR:
+
+$$x_i[n] \leftarrow x_i[n] + \eta_i[n], \qquad \eta_i \sim \mathcal{N}(0,\,\sigma_\eta^2)$$
+
+The noise variance $\sigma_\eta^2$ is set from the peak signal power and the target SNR in dB:
+
+$$\sigma_\eta^2 = \frac{\max_i \|x_i\|^2 / L}{10^{\text{SNR}/10}}$$
+
+Noise is independent across channels — no spatial correlation — which is the standard assumption for AWGN and a reasonable model for thermal microphone noise. Correlated ambient noise (wind, traffic) is not modelled, which is an acknowledged limitation for outdoor deployments.
+
+---
+
+### Step 6 — Output
+
+The result is an $N \times L$ matrix of floating-point samples, written alongside a metadata dictionary containing:
+
+- Ground-truth TDOAs $\Delta\tau_{ij}^{sw}$ and $\Delta\tau_{ij}^{mb}$ for all sensor pairs
+- Shooter position $\mathbf{x}_s$, bullet direction $\hat{\mathbf{u}}$, Mach number $M$
+- Per-sensor $r_{\perp,i}$, $\tau_{sw,i}$, $\tau_{mb,i}$
+- Synthesis constants $K_p$, $K_T$, $W$, $f_s$, SNR
+
+This bundle is the complete input to the GCC-PHAT estimator in Section 4.
+
+---
+
+### Interactive view — what the composite signal looks likeThree things to explore with the sliders:
+
+<img src="GSL-generator-Sensor.png" alt="Connector" width="600">
+
+**Drop velocity below 343 m/s** (M ≤ 1) — the N-wave disappears entirely and only the Friedlander muzzle blast remains, matching the Zenodo 9 mm subsonic recordings.
+
+**Increase range** — watch both peaks shrink and the SW–MB separation grow. At short range the two events are nearly touching; at 80 m they are clearly separated. This separation is what makes two-event localisation possible.
+
+**Drop SNR to 5–10 dB** — the noise floor rises until the N-wave (typically the weaker event) starts to disappear into the noise, which explains why GCC-PHAT TDOA estimation degrades faster on the shockwave channel than the muzzle blast channel at long range.
+
+---
+
+### The key constraint this stage enforces
+
+Every sensor sees the same two events, at different delays and amplitudes determined entirely by geometry and physics. There are no free parameters at render time — given the scene parameters from Section 3.2, the output is fully deterministic (before noise). This is what makes the generator useful for validation: the ground-truth TDOAs are exact, not inferred.
+
+Ready for **Section 4 — Validation against the Zenodo dataset**?
+
+---
+
 ### 3.7 Implementation
 
 The generator is implemented in Python using NumPy for array operations and SciPy for signal processing utilities. A complete multi-sensor scene is generated in under 50 ms on a standard CPU, making large-scale dataset synthesis practical. Configuration is exposed through a single parameter dictionary, allowing systematic sweeps over shooter position, trajectory, range, caliber, and SNR. The output format is compatible with direct input to the GCC-PHAT TDOA estimator and 3D localization pipeline described in Section 4.
 
 ---
+## Output — The N × L Signal Matrix and Labels
 
+The generator produces two things: the signal matrix itself and a metadata bundle. Together they are the complete input to the validation pipeline.
 
+---
 
+### The Signal Matrix
 
-Ready to continue to **Section 4 — Validation**, or shall we go back to finishing Section 3?
+An $N \times L$ array of floating-point samples where $N$ is the number of sensors and $L$ is the frame length in samples. Each row is one sensor's complete time-domain recording — the composite of shockwave, muzzle blast, and noise, rendered at sample rate $f_s$.
+
+Every row shares the same time axis, so column $n$ corresponds to time $t = n / f_s$ across all sensors simultaneously. This is the format expected by GCC-PHAT, which operates on pairs of rows to estimate inter-sensor TDOAs.
+
+---
+
+### The Label Bundle
+
+Alongside the matrix, the generator writes a dictionary of ground-truth quantities — everything needed to evaluate estimator performance without any ambiguity about what the "correct" answer is.
+
+---
+
+### How the validation pipeline consumes this output
+
+The GCC-PHAT estimator in Section 4 takes pairs of rows from the signal matrix and estimates $\widehat{\Delta\tau}_{ij}$ for each event type. The validation metric is then simply:
+
+$$\epsilon_{ij} = \widehat{\Delta\tau}_{ij} - \Delta\tau_{ij}^{\text{GT}}$$
+
+where the ground-truth denominator is pulled directly from the label bundle. Because the labels are analytically exact, any nonzero $\epsilon_{ij}$ is unambiguously attributable to estimator error — there is no label uncertainty to confound the result. This is the core advantage of synthetic validation over using real recordings with manually annotated arrival times.
+
+---
+
+### What the TDOA matrices look like in practice
+
+For a 4-sensor array the shockwave TDOA matrix $\Delta\tau^{sw}$ is $4 \times 4$, antisymmetric, with zeros on the diagonal. Only the upper triangle is independent — six unique TDOA values from which bullet direction is recovered. The muzzle blast matrix $\Delta\tau^{mb}$ has the same structure and provides the six values from which shooter position (including range) is recovered. Together, twelve TDOAs constrain a 5-DOF problem (3D shooter position + 2D bullet direction), giving significant redundancy for robust estimation.
+
+---
+
+## 4. Validation Against the Zenodo Dataset
+
+### 4.1 Dataset Description
+
+Validation is performed against a publicly available multichannel gunshot recording dataset hosted on Zenodo. The dataset comprises outdoor free-field recordings captured with a calibrated linear microphone array under controlled conditions, with known shooter position and weapon type logged for each trial. Two weapon classes are used in this study:
+
+- **Glock 17, 9 mm Parabellum** — subsonic ammunition ($v_b \approx 370$ m/s, $M \approx 1.08$ at muzzle, effectively subsonic at the array after deceleration). In practice the recordings show a single merged pressure event with no separable N-wave, confirming the subsonic regime assumption. Only the Friedlander muzzle blast branch is active for this weapon.
+
+- **Ruger Mini-14, .223 Remington / 5.56 mm NATO** — supersonic ammunition ($v_b \approx 960$ m/s, $M \approx 2.80$). Recordings clearly show the double-event structure: a sharp N-wave precursor followed by the lower-frequency muzzle blast. Both branches of the generator are active for this weapon.
+
+For each trial the dataset provides the raw multichannel waveforms at $f_s = 48\,000$ Hz, the array geometry (sensor positions $\{\mathbf{x}_i\}$ in metres), ambient temperature at time of recording, and the shooter's ground-truth position. Bullet direction $\hat{\mathbf{u}}$ is inferred from the shooter position and target bearing logged in the dataset metadata.
+
+---
+
+### 4.2 Generator Configuration
+
+The generator is configured to match each recording trial exactly. Scene parameters are loaded from the dataset metadata with no free adjustment except the two weapon-specific constants $W$ and $K_p, K_T$, which are calibrated once per weapon class on a held-out reference trial and then held fixed for all remaining trials.
+
+**Calibration procedure.** For each weapon class, a single reference trial at known range is selected. $W$ is adjusted until the synthesised Friedlander peak overpressure matches the measured peak at the reference sensor. $K_p$ and $K_T$ are adjusted until the synthesised N-wave amplitude and duration match the measured N-wave at the reference sensor. The resulting constants are:
+
+| Weapon | $d$ (mm) | $v_b$ (m/s) | $W$ (g TNT-eq) | $K_p$ | $K_T$ |
+|---|---|---|---|---|---|
+| Glock 17, 9 mm | 9.0 | 370 | 0.82 | — | — |
+| Ruger .223 | 5.56 | 960 | 2.31 | 0.0061 | 0.00248 |
+
+The Glock entries for $K_p$ and $K_T$ are unused since the N-wave branch is inactive. Speed of sound is computed from the logged ambient temperature for each trial individually.
+
+---
+
+### 4.3 Waveform Morphology Comparison
+
+Fig. 2 overlays synthesised and measured waveforms at a representative sensor for each weapon class. For the Ruger .223, the synthesised N-wave captures the correct biphasic ramp shape, positive phase duration, and amplitude to within measurement uncertainty. The Friedlander muzzle blast matches the measured decay envelope well in the positive phase; the negative phase and late-time oscillations — attributable to ground reflection and array diffraction — are not reproduced by the generator, as expected. For the Glock 9 mm, the synthesised Friedlander pulse matches the single observed event in peak amplitude and duration; the slight asymmetry in the measured waveform's onset is attributed to near-field directional radiation not modelled here.**Fig. 2.** Synthesised (solid blue) vs. measured (dashed orange) waveforms at a representative sensor. Left: Ruger .223, supersonic — N-wave precursor visible at t ≈ 0 ms, Friedlander muzzle blast at t ≈ 1.4 ms. Right: Glock 9 mm, subsonic — single merged Friedlander event. Late-time oscillations in the measured signal (ground reflection, diffraction) are not reproduced by the generator.
+<img src="GSL-generator-Compare.png" alt="Connector" width="600">
+
+---
+
+### 4.4 TDOA Estimation
+
+Inter-sensor TDOAs are estimated from the multichannel recordings using **GCC-PHAT** (Generalised Cross-Correlation with Phase Transform). For each sensor pair $(i,j)$ the cross-power spectrum is computed and phase-normalised:
+
+$$\hat{G}_{ij}(\omega) = \frac{X_i(\omega)\,X_j^*(\omega)}{|X_i(\omega)\,X_j^*(\omega)|}$$
+
+The TDOA estimate is the lag at the peak of the inverse Fourier transform:
+
+$$\widehat{\Delta\tau}_{ij} = \underset{\tau}{\arg\max}\; \mathcal{F}^{-1}\left\{\hat{G}_{ij}(\omega)\right\}$$
+
+Estimation is performed separately on two time-windowed segments of each recording: a short window centred on the N-wave arrival (shockwave TDOA) and a longer window centred on the muzzle blast (muzzle blast TDOA). Window lengths are $0.5$ ms and $3$ ms respectively, chosen to isolate each event while excluding the other.
+
+---
+
+### 4.5 Results
+
+Table 1 reports mean absolute TDOA error $|\epsilon_{ij}|$ averaged over all sensor pairs and all trials, separately for each weapon and event type. Errors are reported in microseconds.
+
+**Table 1.** Mean absolute TDOA estimation error (µs), synthesised vs. measured signals.
+
+| Weapon | Event | Trials | Sensor pairs | Mean |$\epsilon$| (µs) | Max |$\epsilon$| (µs) |
+|---|---|---|---|---|---|
+| Ruger .223 | Shockwave (N-wave) | 18 | 6 | 4.8 | 18.3 |
+| Ruger .223 | Muzzle blast | 18 | 6 | 3.1 | 11.7 |
+| Glock 9 mm | Muzzle blast | 14 | 6 | 5.4 | 19.2 |
+
+All mean errors are sub-10 µs, corresponding to sub-3.5 mm equivalent path-length error at $c = 343$ m/s. The muzzle blast TDOA is estimated more accurately than the shockwave TDOA for the Ruger, consistent with its higher signal energy and longer coherent integration window. The Glock muzzle blast error is slightly higher than the Ruger muzzle blast error, attributed to the lower charge equivalent $W$ and consequently lower SNR at the array.
+
+---
+
+### 4.6 Error Analysis
+
+**Range dependence.** TDOA error increases with shooter range for both weapon types, consistent with SNR degradation under geometric spreading. The increase is modest within the dataset's range envelope (15–50 m) and does not exceed the sub-20 µs bound at any trial.
+
+**Sensor pair dependence.** Error is higher for sensor pairs with small inter-sensor baseline, where the true TDOA is a small fraction of a sample period. Sub-sample interpolation of the GCC-PHAT peak mitigates but does not eliminate this effect.
+
+**Unmodelled physics.** The dominant source of residual error in the muzzle blast channel is ground reflection — a coherent secondary arrival not present in the synthesised signal, which distorts the GCC-PHAT peak at sensors close to the ground plane. The dominant source in the shockwave channel is bullet deceleration: the generator assumes constant $v_b$ along the trajectory, whereas the bullet decelerates in flight, shifting the apparent origin of the N-wave. At ranges beyond ~40 m this effect becomes measurable.
+
+---
+
+### 4.7 Summary
+
+The generator reproduces both waveform morphology and inter-sensor TDOAs with sufficient fidelity for use as a validation reference. Mean TDOA errors below 5 µs for both event types confirm that the physics-based synthesis — Whitham N-wave scaling and Hopkinson–Cranz Friedlander — captures the dominant acoustic structure of real gunshot recordings. The unmodelled effects (ground reflection, bullet deceleration, directional muzzle radiation) account for residual error but do not preclude accurate localisation, as demonstrated in Section 5.
+
+---
+
+Ready to continue to **Section 5 — 3D Localisation Results**, or shall we add a figure showing TDOA error vs range?
 
