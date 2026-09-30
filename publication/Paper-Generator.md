@@ -602,7 +602,7 @@ The Glock entries for $K_p$ and $K_T$ are unused since the N-wave branch is inac
 ### 4.3 Waveform Morphology Comparison
 
 Fig. 2 overlays synthesised and measured waveforms at a representative sensor for each weapon class. For the Ruger .223, the synthesised N-wave captures the correct biphasic ramp shape, positive phase duration, and amplitude to within measurement uncertainty. The Friedlander muzzle blast matches the measured decay envelope well in the positive phase; the negative phase and late-time oscillations — attributable to ground reflection and array diffraction — are not reproduced by the generator, as expected. For the Glock 9 mm, the synthesised Friedlander pulse matches the single observed event in peak amplitude and duration; the slight asymmetry in the measured waveform's onset is attributed to near-field directional radiation not modelled here.**Fig. 2.** Synthesised (solid blue) vs. measured (dashed orange) waveforms at a representative sensor. Left: Ruger .223, supersonic — N-wave precursor visible at t ≈ 0 ms, Friedlander muzzle blast at t ≈ 1.4 ms. Right: Glock 9 mm, subsonic — single merged Friedlander event. Late-time oscillations in the measured signal (ground reflection, diffraction) are not reproduced by the generator.
-<img src="GSL-generator-Compare.png" alt="Connector" width="600">
+<img src="GSL-generator-compare.png" alt="Connector" width="600">
 
 ---
 
