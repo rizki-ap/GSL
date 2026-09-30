@@ -167,10 +167,43 @@ The perpendicular standoff distance is $r_{\perp,i} = \|\mathbf{x}_i - \mathbf{x
 
 $$\tau_{sw,i} = \frac{r_{\perp,i}}{c}$$
 
+This stage takes the scene parameters and resolves all spatial relationships before any waveform is synthesised. It has three jobs: find where each acoustic event *appears to come from*, compute how long it takes to reach each sensor, and produce the ground-truth TDOA labels.
+
+---
+
+### Shockwave Apparent Origin per Sensor
+
+The shockwave is not a point source. It radiates continuously from every point along the bullet's flight path. What a sensor *hears* is the wavefront that was emitted from the specific point on the trajectory where the Mach cone intersects the sensor's perpendicular — the **foot of the perpendicular** from the sensor to the bullet ray.
+
+Given shooter position $\mathbf{x}_s$ and bullet direction unit vector $\hat{\mathbf{u}}$, the apparent origin for sensor $i$ is:
+
+$$\mathbf{x}_{sw,i} = \mathbf{x}_s + \underbrace{\left[(\mathbf{x}_i - \mathbf{x}_s) \cdot \hat{\mathbf{u}}\right]}_{\text{scalar projection}} \hat{\mathbf{u}}$$
+
+This is a straightforward vector projection — you project the sensor's position onto the bullet ray and find the closest point. Three quantities follow immediately:
+
+$$r_{\perp,i} = \|\mathbf{x}_i - \mathbf{x}_{sw,i}\| \quad \text{(perpendicular standoff distance)}$$
+
+$$\tau_{sw,i} = \frac{r_{\perp,i}}{c} \quad \text{(shockwave propagation delay to sensor } i \text{)}$$
+
+Note that $r_{\perp,i}$ also feeds directly into the N-wave amplitude and duration expressions in Stage II — it is not just a timing quantity.
+
+---
+
 #### 3.3.2 Muzzle Blast Origin
 The muzzle blast originates at the shooter position $\mathbf{x}_s$. The propagation delay to sensor $i$ is simply
 
 $$\tau_{mb,i} = \frac{\|\mathbf{x}_i - \mathbf{x}_s\|}{c}$$
+
+### Muzzle Blast Origin (trivial but important)
+
+The muzzle blast originates from a fixed point: the shooter position $\mathbf{x}_s$. Unlike the shockwave, there is no apparent-origin calculation — the source is always the muzzle.
+
+$$\tau_{mb,i} = \frac{\|\mathbf{x}_i - \mathbf{x}_s\|}{c}$$
+
+This simplicity is why muzzle blast TDOAs are so useful for localisation — the geometry is clean.
+
+---
+
 
 #### 3.3.3 Absolute Timing
 
@@ -179,6 +212,42 @@ A global time reference $t_0 = 0$ is assigned to the moment of discharge. The sh
 $$\Delta \tau_{ij}^{(\cdot)} = \tau_{(\cdot),i} - \tau_{(\cdot),j}$$
 
 These TDOAs constitute the ground-truth labels against which the estimator is later validated.
+
+### Absolute Timing and TDOA Labels
+
+A global time reference $t_0 = 0$ is set at the moment of discharge. Every per-sensor delay is expressed relative to this. The shockwave arrives at sensor $i$ at $t_0 + \tau_{sw,i}$, the muzzle blast at $t_0 + \tau_{mb,i}$.
+
+The inter-sensor TDOAs are then:
+
+$$\Delta\tau_{ij}^{sw} = \tau_{sw,i} - \tau_{sw,j} \qquad \text{(shockwave TDOA, sensors } i \text{ and } j\text{)}$$
+
+$$\Delta\tau_{ij}^{mb} = \tau_{mb,i} - \tau_{mb,j} \qquad \text{(muzzle blast TDOA)}$$
+
+These are written out as **ground-truth labels** — the exact values the GCC-PHAT estimator will later be compared against during Zenodo validation.
+
+---
+
+### One Non-obvious Detail — Ordering Guarantee
+
+For any supersonic shot ($M > 1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
+
+---
+
+### Output of Stage I
+
+| Quantity | Shape | Used by |
+|---|---|---|
+| $r_{\perp,i}$ | $N \times 1$ | N-wave amplitude/duration (Stage II) |
+| $\tau_{sw,i}$ | $N \times 1$ | Waveform placement (Stage III) |
+| $\tau_{mb,i}$ | $N \times 1$ | Waveform placement (Stage III) |
+| $\Delta\tau_{ij}^{sw}$ | $N \times N$ | Ground-truth labels |
+| $\Delta\tau_{ij}^{mb}$ | $N \times N$ | Ground-truth labels |
+
+All of these are computed analytically in a few lines of NumPy — Stage I has no iterative solver, no approximation, and no failure mode. It is the most reliable part of the pipeline.
+
+---
+
+The one assumption baked in here is that the bullet travels in a straight line at constant velocity — no drag, no drop. For the ranges involved in the Zenodo dataset (tens of metres) this is a very good approximation.
 
 ### 3.4 Shockwave N-Wave Synthesis
 
@@ -204,23 +273,6 @@ The scaled distance to sensor $i$ from the muzzle is $Z_i = r_i / W^{1/3}$, wher
 $$\Delta p_{0,i} = f_{\Delta p}(Z_i), \qquad T^+_{mb,i} = f_{T^+}(Z_i) \cdot W^{1/3}$$
 
 where $f_{\Delta p}(\cdot)$ and $f_{T^+}(\cdot)$ are piecewise polynomial fits to tabulated scaling data. The pulse is placed at sample index $\lfloor \tau_{mb,i} \cdot f_s \rceil$.
-
-### 3.6 Per-Sensor Rendering
-The composite signal at sensor $i$ is formed by superimposing the two events on a shared timeline of length $L$ samples:
-
-$$x_i[n] = p_{sw,i}[n] + p_{mb,i}[n] + \eta_i[n]$$
-
-where $\eta_i[n]$ is additive white Gaussian noise at a configurable signal-to-noise ratio. Geometric spreading is embedded in the amplitude expressions of Sections 3.4 and 3.5 through their $r^{-3/4}$ and $r^{-1}$ distance dependencies respectively. Optional first-order atmospheric absorption is applied as a frequency-domain filter with attenuation coefficient $\alpha(f)$ following ISO 9613-1, applied before final placement on the timeline.
-The output is an $N \times L$ matrix of multichannel time-domain samples, with accompanying metadata containing ground-truth TDOAs, shooter position, bullet direction, and all intermediate geometric quantities.
-
-### 3.7 Implementation
-
-The generator is implemented in Python using NumPy for array operations and SciPy for signal processing utilities. A complete multi-sensor scene is generated in under 50 ms on a standard CPU, making large-scale dataset synthesis practical. Configuration is exposed through a single parameter dictionary, allowing systematic sweeps over shooter position, trajectory, range, caliber, and SNR. The output format is compatible with direct input to the GCC-PHAT TDOA estimator and 3D localization pipeline described in Section 4.
-
----
-
-Ready to continue to **Section 4 — Validation Against the Zenodo Dataset**, which covers the GCC-PHAT TDOA estimation results and waveform morphology comparison against real recordings?
-
 Here's the full derivation behind Section 3.5.
 
 ## Friedlander Muzzle Blast Synthesis
@@ -296,77 +348,23 @@ These are first-order omissions that are acceptable for the Zenodo validation, w
 
 In short: H–C scaling lets you parameterise the entire range-dependent muzzle blast with a single weapon-specific constant $W$, calibrated once from data. That's the key simplification that makes the synthesis computationally tractable.
 
-Want me to continue to **Section 4 — Validation**, or elaborate on how $W$ is calibrated from the Zenodo recordings?
 
-## Geometric Computation — Stage I in Detail
+### 3.6 Per-Sensor Rendering
+The composite signal at sensor $i$ is formed by superimposing the two events on a shared timeline of length $L$ samples:
 
-This stage takes the scene parameters and resolves all spatial relationships before any waveform is synthesised. It has three jobs: find where each acoustic event *appears to come from*, compute how long it takes to reach each sensor, and produce the ground-truth TDOA labels.
+$$x_i[n] = p_{sw,i}[n] + p_{mb,i}[n] + \eta_i[n]$$
 
----
+where $\eta_i[n]$ is additive white Gaussian noise at a configurable signal-to-noise ratio. Geometric spreading is embedded in the amplitude expressions of Sections 3.4 and 3.5 through their $r^{-3/4}$ and $r^{-1}$ distance dependencies respectively. Optional first-order atmospheric absorption is applied as a frequency-domain filter with attenuation coefficient $\alpha(f)$ following ISO 9613-1, applied before final placement on the timeline.
+The output is an $N \times L$ matrix of multichannel time-domain samples, with accompanying metadata containing ground-truth TDOAs, shooter position, bullet direction, and all intermediate geometric quantities.
 
-### Job 1 — Shockwave Apparent Origin per Sensor
+### 3.7 Implementation
 
-The shockwave is not a point source. It radiates continuously from every point along the bullet's flight path. What a sensor *hears* is the wavefront that was emitted from the specific point on the trajectory where the Mach cone intersects the sensor's perpendicular — the **foot of the perpendicular** from the sensor to the bullet ray.
-
-Given shooter position $\mathbf{x}_s$ and bullet direction unit vector $\hat{\mathbf{u}}$, the apparent origin for sensor $i$ is:
-
-$$\mathbf{x}_{sw,i} = \mathbf{x}_s + \underbrace{\left[(\mathbf{x}_i - \mathbf{x}_s) \cdot \hat{\mathbf{u}}\right]}_{\text{scalar projection}} \hat{\mathbf{u}}$$
-
-This is a straightforward vector projection — you project the sensor's position onto the bullet ray and find the closest point. Three quantities follow immediately:
-
-$$r_{\perp,i} = \|\mathbf{x}_i - \mathbf{x}_{sw,i}\| \quad \text{(perpendicular standoff distance)}$$
-
-$$\tau_{sw,i} = \frac{r_{\perp,i}}{c} \quad \text{(shockwave propagation delay to sensor } i \text{)}$$
-
-Note that $r_{\perp,i}$ also feeds directly into the N-wave amplitude and duration expressions in Stage II — it is not just a timing quantity.
+The generator is implemented in Python using NumPy for array operations and SciPy for signal processing utilities. A complete multi-sensor scene is generated in under 50 ms on a standard CPU, making large-scale dataset synthesis practical. Configuration is exposed through a single parameter dictionary, allowing systematic sweeps over shooter position, trajectory, range, caliber, and SNR. The output format is compatible with direct input to the GCC-PHAT TDOA estimator and 3D localization pipeline described in Section 4.
 
 ---
 
-### Job 2 — Muzzle Blast Origin (trivial but important)
 
-The muzzle blast originates from a fixed point: the shooter position $\mathbf{x}_s$. Unlike the shockwave, there is no apparent-origin calculation — the source is always the muzzle.
 
-$$\tau_{mb,i} = \frac{\|\mathbf{x}_i - \mathbf{x}_s\|}{c}$$
-
-This simplicity is why muzzle blast TDOAs are so useful for localisation — the geometry is clean.
-
----
-
-### Job 3 — Absolute Timing and TDOA Labels
-
-A global time reference $t_0 = 0$ is set at the moment of discharge. Every per-sensor delay is expressed relative to this. The shockwave arrives at sensor $i$ at $t_0 + \tau_{sw,i}$, the muzzle blast at $t_0 + \tau_{mb,i}$.
-
-The inter-sensor TDOAs are then:
-
-$$\Delta\tau_{ij}^{sw} = \tau_{sw,i} - \tau_{sw,j} \qquad \text{(shockwave TDOA, sensors } i \text{ and } j\text{)}$$
-
-$$\Delta\tau_{ij}^{mb} = \tau_{mb,i} - \tau_{mb,j} \qquad \text{(muzzle blast TDOA)}$$
-
-These are written out as **ground-truth labels** — the exact values the GCC-PHAT estimator will later be compared against during Zenodo validation.
-
----
-
-### One Non-obvious Detail — Ordering Guarantee
-
-For any supersonic shot ($M > 1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
-
----
-
-### Output of Stage I
-
-| Quantity | Shape | Used by |
-|---|---|---|
-| $r_{\perp,i}$ | $N \times 1$ | N-wave amplitude/duration (Stage II) |
-| $\tau_{sw,i}$ | $N \times 1$ | Waveform placement (Stage III) |
-| $\tau_{mb,i}$ | $N \times 1$ | Waveform placement (Stage III) |
-| $\Delta\tau_{ij}^{sw}$ | $N \times N$ | Ground-truth labels |
-| $\Delta\tau_{ij}^{mb}$ | $N \times N$ | Ground-truth labels |
-
-All of these are computed analytically in a few lines of NumPy — Stage I has no iterative solver, no approximation, and no failure mode. It is the most reliable part of the pipeline.
-
----
-
-The one assumption baked in here is that the bullet travels in a straight line at constant velocity — no drag, no drop. For the ranges involved in the Zenodo dataset (tens of metres) this is a very good approximation.
 
 Ready to continue to **Section 4 — Validation**, or shall we go back to finishing Section 3?
 
