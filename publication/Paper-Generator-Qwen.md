@@ -12,10 +12,6 @@ The remainder of this paper is organized as follows. Section 2 reviews the relev
 
 ---
 
-*Author Note: Lean and properly scoped. Two things to confirm when you finalize:*
-- *Zenodo dataset citation — **Resolved**: Added DOI and weapon types in Section 4.1.*
-- *Subsonic caveat — the Glock recordings show a merged single event rather than the two-event structure; worth flagging in the intro or leaving for Section 4 (addressed in 4.1).*
-
 ## 2. Acoustic Physics of Gunshot Signals
 
 ### 2.1 The Two-Event Model
@@ -62,7 +58,7 @@ $$ t_i = t_{\text{origin}} + \frac{\| \mathbf{x}_i - \mathbf{x}_{\text{source}} 
 
 where $\mathbf{x}_i$ is the sensor position and $\mathbf{x}_{\text{source}}$ is the apparent origin of the respective event. Amplitude is attenuated by spherical geometric spreading proportional to $1/r$, with optional atmospheric absorption for long-range scenarios. The composite signal at each sensor is the superposition of the (delayed, scaled) shockwave N-wave and Friedlander muzzle blast, plus additive noise.
 
-*Author Note: That covers the core physics cleanly. Ready to move to **Section 3 — Signal Generation Methodology**, which is where you describe the actual implementation (parameterization, waveform synthesis, array rendering). That's where the novel contribution lives.*
+---
 
 ## 3. Signal Generation Methodology
 
