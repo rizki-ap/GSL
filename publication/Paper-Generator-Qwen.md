@@ -135,17 +135,7 @@ The minimal viable call for a single supersonic shot with a 4-sensor array is th
 
 #### 3.3.1 Shockwave Apparent Origin
 
-The shockwave heard at sensor $i$ originates from the point along the bullet trajectory where the Mach cone intersects the sensor's perpendicular. This apparent origin $\mathbf{x}_{sw,i}$ is the foot of the perpendicular from $\mathbf{x}_i$ to the bullet ray:
-
-$$ \mathbf{x}_{sw,i} = \mathbf{x}_s + \left[ (\mathbf{x}_i - \mathbf{x}_s) \cdot \hat{\mathbf{u}} \right] \hat{\mathbf{u}} $$
-
-The perpendicular standoff distance is $r_{\perp,i} = \|\mathbf{x}_i - \mathbf{x}_{sw,i}\|$, and the propagation delay from apparent origin to sensor $i$ is:
-
-$$ \tau_{sw,i} = \frac{r_{\perp,i}}{c} $$
-
-This stage takes the scene parameters and resolves all spatial relationships before any waveform is synthesised. It has three jobs: find where each acoustic event *appears to come from*, compute how long it takes to reach each sensor, and produce the ground-truth TDOA labels.
-
-The shockwave is not a point source. It radiates continuously from every point along the bullet's flight path. What a sensor *hears* is the wavefront that was emitted from the specific point on the trajectory where the Mach cone intersects the sensor's perpendicular — the **foot of the perpendicular** from the sensor to the bullet ray.
+The shockwave heard at sensor $i$ originates from the point along the bullet trajectory where the Mach cone intersects the sensor's perpendicular. The shockwave is not a point source. It radiates continuously from every point along the bullet's flight path. What a sensor *hears* is the wavefront that was emitted from the specific point on the trajectory where the Mach cone intersects the sensor's perpendicular — the **foot of the perpendicular** from the sensor to the bullet ray.
 
 Given shooter position $\mathbf{x}_s$ and bullet direction unit vector $\hat{\mathbf{u}}$, the apparent origin for sensor $i$ is:
 
@@ -157,6 +147,8 @@ $$ r_{\perp,i} = \|\mathbf{x}_i - \mathbf{x}_{sw,i}\| \quad \text{(perpendicular
 $$ \tau_{sw,i} = \frac{r_{\perp,i}}{c} \quad \text{(shockwave propagation delay to sensor } i) $$
 
 Note that $r_{\perp,i}$ also feeds directly into the N-wave amplitude and duration expressions in Stage II — it is not just a timing quantity.
+
+This stage takes the scene parameters and resolves all spatial relationships before any waveform is synthesised. It has three jobs: find where each acoustic event *appears to come from*, compute how long it takes to reach each sensor, and produce the ground-truth TDOA labels.
 
 #### 3.3.2 Muzzle Blast Origin
 
