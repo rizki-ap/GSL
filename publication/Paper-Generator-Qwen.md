@@ -179,7 +179,7 @@ $$ \Delta \tau_{ij}^{sw} = \tau_{sw,i} - \tau_{sw,j} \quad \text{(shockwave TDOA
 $$ \Delta \tau_{ij}^{mb} = \tau_{mb,i} - \tau_{mb,j} \quad \text{(muzzle blast TDOA)} $$
 *These are written out as **ground-truth labels** — the exact values the GCC-PHAT estimator will later be compared against during Zenodo validation.*
 
-One Non-obvious Detail — Ordering Guarantee. For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
+For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
 
 #### Output of Stage I
 
@@ -217,12 +217,9 @@ where $K_p$ and $K_T$ are empirical constants calibrated per bullet caliber agai
 - **The Canonical N-Wave Shape**: The normalised N-wave over its full duration $[-T_+/2, T_+/2]$ is a linear biphasic ramp. At $t=-T_+/2$: $p=+\Delta p_i$ (leading shock front, positive peak); At $t=0$: $p=0$ (zero crossing); At $t=+T_+/2$: $p=-\Delta p_i$ (trailing shock, negative trough).
 - **Placement on the sensor timeline**: Once $\Delta p_i$ and $T_{+,i}$ are computed, the waveform is zero-padded to the full output frame length $L$ and stamped at sample index: $n_{sw,i} = \lfloor \tau_{sw,i} \cdot f_s \rceil$.
 
-### Visualisation
-
 ![Figure 2: N-Wave Shockwave Synthesis Visualization](GSL-generator-N.png)
 *Fig. 2. Interactive visualization of the N-wave shockwave synthesis parameters.*
 
-Here's an interactive synthesis widget showing exactly how the waveform shape responds to the two key parameters. Try sliding calibre up and range out — the two Whitham scalings become immediately visible.
 
 #### What the sliders demonstrate
 
@@ -272,15 +269,9 @@ The output is an $N \times L$ matrix of multichannel time-domain samples, with a
 
 The key constraint this stage enforces is that every sensor sees the same two events, at different delays and amplitudes determined entirely by geometry and physics. There are no free parameters at render time — given the scene parameters from Section 3.2, the output is fully deterministic (before noise). This is what makes the generator useful for validation: the ground-truth TDOAs are exact, not inferred.
 
-### Interactive view — what the composite signal looks like
-
 ![Figure 3: Per-Sensor Composite Signal Rendering](GSL-generator-sensor.png)
 *Fig. 3. Interactive view of the composite signal rendered on the sensor timeline.*
 
-Three things to explore with the sliders:
-- **Drop velocity below 343 m/s** ($M \le 1$) — the N-wave disappears entirely and only the Friedlander muzzle blast remains, matching the Zenodo 9 mm subsonic recordings.
-- **Increase range** — watch both peaks shrink and the SW–MB separation grow. At short range the two events are nearly touching; at 80 m they are clearly separated. This separation is what makes two-event localisation possible.
-- **Drop SNR to 5–10 dB** — the noise floor rises until the N-wave (typically the weaker event) starts to disappear into the noise, which explains why GCC-PHAT TDOA estimation degrades faster on the shockwave channel than the muzzle blast channel at long range.
 
 ### 3.7 Implementation
 
