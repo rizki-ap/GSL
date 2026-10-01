@@ -93,7 +93,7 @@ The speed of sound $c$ is derived from $T$ as in Section 2.4. The Mach number $M
 These are the complete inputs to the generator. Every quantity that follows — delays, waveform shapes, amplitudes, TDOAs — is derived from these alone.
 
 - **Bullet Parameters**
-  - **Calibre $d$ (metres)**: The projectile diameter. Feeds directly into the N-wave scaling — both peak overpressure and positive phase duration scale with $d$. In practice you supply a named calibre (9 mm, .223, .308) and the generator converts to metres.
+  - **Calibre $d$ (metres)**: The projectile diameter. Feeds directly into the N-wave scaling — both peak overpressure and positive phase duration scale with $d$. In practice user supply a named calibre (9 mm, .223, .308) and the generator converts to metres.
   - **Muzzle velocity $v_b$ (m/s)**: The bullet's speed as it exits the barrel. Together with the ambient speed of sound $c$, this determines the Mach number $M = v_b/c$. If $M \le 1$ the shockwave branch is bypassed entirely — the generator produces only the Friedlander muzzle blast, as with the 9 mm subsonic case in the Zenodo dataset.
 
 - **Source Geometry**
@@ -151,7 +151,7 @@ Given shooter position $\mathbf{x}_s$ and bullet direction unit vector $\hat{\ma
 
 $$ \mathbf{x}_{sw,i} = \mathbf{x}_s + \underbrace{\left[ (\mathbf{x}_i - \mathbf{x}_s) \cdot \hat{\mathbf{u}} \right]}_{\text{scalar projection}} \hat{\mathbf{u}} $$
 
-This is a straightforward vector projection — you project the sensor's position onto the bullet ray and find the closest point. Three quantities follow immediately:
+This is a straightforward vector projection — project the sensor's position onto the bullet ray and find the closest point. Three quantities follow immediately:
 
 $$ r_{\perp,i} = \|\mathbf{x}_i - \mathbf{x}_{sw,i}\| \quad \text{(perpendicular standoff distance)} $$
 $$ \tau_{sw,i} = \frac{r_{\perp,i}}{c} \quad \text{(shockwave propagation delay to sensor } i) $$
@@ -177,7 +177,8 @@ These TDOAs constitute the ground-truth labels against which the estimator is la
 Every per-sensor delay is expressed relative to this. The inter-sensor TDOAs are then:
 $$ \Delta \tau_{ij}^{sw} = \tau_{sw,i} - \tau_{sw,j} \quad \text{(shockwave TDOA, sensors } i \text{ and } j) $$
 $$ \Delta \tau_{ij}^{mb} = \tau_{mb,i} - \tau_{mb,j} \quad \text{(muzzle blast TDOA)} $$
-*These are written out as **ground-truth labels** — the exact values the GCC-PHAT estimator will later be compared against during Zenodo validation.*
+
+These are written out as **ground-truth labels** — the exact values the GCC-PHAT estimator will later be compared against during Zenodo validation.
 
 For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
 
@@ -193,7 +194,7 @@ For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzl
 
 All of these are computed analytically in a few lines of NumPy — Stage I has no iterative solver, no approximation, and no failure mode. It is the most reliable part of the pipeline.
 
-The one assumption baked in here is that the bullet travels in a straight line at constant velocity — no drag, no drop. For the ranges involved in the Zenodo dataset (tens of metres) this is a very good approximation.
+The one assumption in here is that the bullet travels in a straight line at constant velocity — no drag, no drop. For the ranges involved in the Zenodo dataset (tens of metres) this is a very good approximation.
 
 ### 3.4 Shockwave N-Wave Synthesis
 
@@ -219,12 +220,6 @@ where $K_p$ and $K_T$ are empirical constants calibrated per bullet caliber agai
 
 ![Figure 2: N-Wave Shockwave Synthesis Visualization](GSL-generator-N.png)
 *Fig. 2. Interactive visualization of the N-wave shockwave synthesis parameters.*
-
-
-#### What the sliders demonstrate
-
-- **Increasing calibre** at fixed range: amplitude grows as $d^{3/4}$ and duration grows as $d^{1/2}$. A .308 rifle (7.62 mm) produces a stronger *and* longer N-wave than a 9 mm pistol at the same perpendicular distance — both effects compound.
-- **Increasing range** at fixed calibre: amplitude decays as $r_\perp^{-3/4}$ (slower than geometric $r^{-1}$) and duration stretches as $r_\perp^{1/4}$ (slowly — doubling range only adds ~19% to $T^+$). At long range the wave becomes wide and flat; at short range it is sharp and tall. This is the distinguishing signature of a weak shock vs a linear acoustic wave.
 
 ---
 
