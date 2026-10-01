@@ -637,11 +637,8 @@ Pearson coefficients above 0.91 for both weapon types confirm that the synthesis
 ### 4.5 Spectral Coherence
 
 Fig. 3 shows the mean magnitude-squared coherence $\bar{C}(\omega)$ between synthesised and measured signals, averaged across all trials and sensor pairs, for each weapon class.**Fig. 3.** Mean magnitude-squared coherence $\bar{C}(\omega)$ between synthesised and measured signals, averaged over all trials and sensor pairs. Both weapons exceed $\bar{C} = 0.80$ across their primary event bandwidths: 0–4 kHz for the Glock muzzle blast and 0–8 kHz for the Ruger composite. Coherence degradation above these cutoffs is attributed to ground reflection and atmospheric turbulence — neither modelled by the generator.
-
 The Ruger achieves consistently higher coherence than the Glock at equivalent frequency, because the N-wave's sharp temporal structure anchors the phase relationship between synthesised and measured signals more tightly than the slower Friedlander onset alone. Both curves fall below $\bar{C} = 0.80$ at frequencies where unmodelled multipath energy dominates the spectral content.
 <img src="GSL-generator-compare2.png" alt="Connector" width="400">
-
----
 
 ### 4.6 TDOA Accuracy Results
 
@@ -659,10 +656,7 @@ Table 1 reports TDOA estimation accuracy across all sensor pairs and trials, for
 
 All MAE values are sub-6 µs, corresponding to sub-2 mm equivalent path-length error. RMSE values are 20–30% higher than MAE, indicating the presence of a small number of elevated-error cases (outliers at long range and small inter-sensor baseline) rather than uniformly distributed error. Bias values of +0.4 to +1.2 µs are small but consistently positive, attributable to the constant-velocity bullet assumption: the generator places the shockwave apparent origin slightly closer than the true decelerated position, producing a small systematic early-arrival bias.
 
----
-
 ### 4.7 Summary
-
 Table 2 consolidates all metrics across both weapons and event types.
 
 **Table 2.** Consolidated validation metrics.
@@ -680,155 +674,79 @@ Across all metrics the generator demonstrates consistent fidelity to real record
 ## 5. Summary and Discussion
 
 ### 5.1 Summary of Contributions
-
 This paper presented a physics-based acoustic gunshot signal generator capable of synthesising per-sensor multichannel recordings for an arbitrary microphone array. The generator models two physically distinct events — the ballistic shockwave N-wave via Whitham weak-shock scaling and the muzzle blast Friedlander pulse via Hopkinson–Cranz scaling laws — and renders both onto a shared timeline with geometrically correct propagation delays, range-dependent amplitude, and additive noise. The complete output is an $N \times L$ signal matrix paired with an analytically exact ground-truth label bundle, suitable for direct input to TDOA estimation and localisation pipelines.
-
 Validation against the Zenodo multichannel gunshot dataset across two weapon classes — Ruger .223 (supersonic) and Glock 17 9 mm (subsonic) — demonstrated:
-
 - Pearson correlation coefficients of **0.918–0.963** between synthesised and measured waveforms, confirming high shape fidelity over the positive phase of each event
 - Synthesis SNR of **9.7–12.1 dB**, with residual error concentrated in unmodelled late-time phenomena
 - Peak overpressure and duration errors below **9%**, validating the physical scaling constants
 - Spectral coherence above **0.80** across the primary event bandwidth (0–4 kHz for muzzle blast, 0–8 kHz for the Ruger composite)
 - TDOA mean absolute error below **5.4 µs** across all weapon types and event classes, corresponding to sub-2 mm equivalent path-length error
 - A small positive TDOA bias of **+0.4 to +1.2 µs**, attributable to the constant-velocity bullet assumption
-
 Together these results confirm that the generator faithfully reproduces the dominant acoustic structure of real gunshot recordings with a single weapon-specific calibration, requiring no per-trial tuning.
 
----
-
 ### 5.2 Discussion of Error Sources
-
 The validation results isolate three primary sources of residual error, each with a distinct physical origin and remediation path.
-
 **Ground reflection and multipath.** The largest contributor to both waveform SNR loss and coherence degradation above the primary event bandwidth. The generator assumes free-field propagation; outdoor recordings over hard ground include a coherent ground reflection arriving 1–3 ms after the direct path. At close ranges this reflection partially overlaps the muzzle blast negative phase, distorting the waveform tail and introducing a secondary GCC-PHAT peak that can shift the TDOA estimate. A first-order remediation is to add a delayed, attenuated image-source reflection to the synthesis model, parameterised by ground impedance and array height. This would improve the muzzle blast coherence at mid frequencies (1–4 kHz) and reduce the long-range TDOA bias.
-
 **Bullet deceleration.** The constant-velocity assumption places the shockwave apparent origin $\mathbf{x}_{sw,i}$ at the foot of the perpendicular from each sensor to the *initial* bullet ray, whereas the actual bullet decelerates continuously in flight, shifting the true apparent origin toward the shooter. The resulting error grows with range and is the primary driver of the +0.9 µs shockwave TDOA bias. For supersonic bullets, deceleration from drag follows a predictable ballistic model parameterised by the ballistic coefficient $C_b$. Incorporating a range-dependent velocity profile $v_b(x) = v_b(0)\exp(-kx)$, with $k$ fit from tabulated ballistic data per calibre, would reduce the shockwave apparent-origin error at ranges beyond 30–40 m.
-
 **Directional muzzle radiation.** The Friedlander model treats the muzzle blast as an omnidirectional point source. Real muzzle blasts have a forward-biased radiation pattern — sensors in the direction of bullet travel receive higher overpressure than those to the rear. This directional asymmetry produces the onset asymmetry observed in the Glock 9 mm recordings and is the dominant cause of the Glock's lower Pearson correlation (0.918 vs 0.957 for the Ruger muzzle blast). A cardioid or toroidal directivity function parameterised by azimuth from the barrel axis could be applied as a multiplicative correction to $\Delta p_{0,i}$ without changing the waveform shape.
 
----
-
 ### 5.3 Implications for TDOA Estimation Benchmarking
-
 The sub-6 µs TDOA accuracy demonstrated here has a direct practical implication: the generator can serve as a controlled, reproducible reference environment for benchmarking GCC-PHAT and its variants without requiring live-fire experiments. The exact ground-truth labels allow unambiguous attribution of estimation error to the algorithm rather than to label uncertainty — a confound present in all manually annotated real-recording datasets.
-
 This is particularly valuable for two benchmarking scenarios that are difficult to realise experimentally. First, **SNR sweeps**: by varying the noise parameter in the generator, the TDOA estimator's degradation curve as a function of SNR can be characterised precisely — something that requires controlled, repeatable conditions impossible to maintain outdoors. Second, **array geometry optimisation**: the generator can rapidly evaluate TDOA estimation performance across thousands of candidate array geometries at negligible cost, guiding sensor placement decisions before any hardware is deployed.
 
----
-
 ### 5.4 Scope and Generalisability
-
 The generator is calibrated on two weapon classes. The underlying physics — Whitham N-wave scaling and Hopkinson–Cranz Friedlander — are general: any supersonic small-arms projectile generates a shockwave governed by these relations, and any muzzle blast is well described by the Friedlander model in the far field. Extension to additional calibres requires only a new reference recording for calibration of $W$, $K_p$, and $K_T$ — a one-time cost per weapon class.
-
 The two-constant Whitham parameterisation ($K_p$, $K_T$) is a simplification of the full Whitham theory, which accounts for bullet nose geometry and cross-sectional area distribution. For projectiles with unusual geometries (boat-tail, hollow-point, armour-piercing) the simplified scaling may introduce additional amplitude error. For standard ball ammunition — the dominant case in the Zenodo dataset and in most operational scenarios — the simplification is well supported by the validation results.
-
 The generator is agnostic to array geometry and sensor count. All results reported here used a four-sensor linear array consistent with the Zenodo dataset geometry. Performance on volumetric arrays, which provide better 3D coverage and range resolution, is expected to be equivalent or better due to the larger number of independent TDOA pairs constraining the localisation problem.
 
----
-
 ### 5.5 Limitations
-
 Four limitations are explicitly acknowledged:
-
 **Subsonic shockwave model absent.** For the Glock 9 mm, the generator produces only the Friedlander muzzle blast. Strictly, even subsonic rounds generate a weak low-frequency precursor from barrel resonance and projectile exit transients — effects not modelled here and not clearly separable in the Zenodo recordings at this SNR.
-
 **Single-propagation-path model.** Beyond ground reflection, the generator does not model urban canyon multipath, vegetation scattering, or barrier diffraction. In complex acoustic environments (urban, forested) the synthesised signals may diverge significantly from real recordings in ways not captured by the free-field validation presented here.
-
 **Noise model simplicity.** The AWGN noise model does not capture temporally or spatially correlated ambient noise — wind turbulence, traffic, machinery — which is the dominant noise source in many operational deployments and has a substantially different spectral shape than white noise. A coloured noise extension, parameterised by a measured ambient noise spectrum, would improve operational realism.
-
 **Calibration dependency.** The generator requires at least one reference recording per weapon class to set $W$, $K_p$, $K_T$. For novel or unidentified weapons, these constants are unknown. In a detection-first pipeline where weapon type is identified from the recording itself, a prior over common calibre classes could be used to initialise the generator parameters.
 
----
-
 ### 5.6 Future Work
-
 Three natural extensions follow from the current work.
-
 **Range estimation integration.** The generator's ground-truth geometry includes shooter range — a quantity not directly observable from TDOAs alone but recoverable from the combination of shockwave and muzzle blast TDOA sets. Future work will incorporate the closed-form range estimator derived from the two-event geometry into the pipeline and evaluate its accuracy against the Zenodo ground-truth positions.
-
 **Deceleration model.** Incorporating a ballistic deceleration model for the bullet velocity profile would reduce the shockwave TDOA bias at long range and improve apparent-origin computation, particularly for high-velocity rifle rounds at ranges beyond 40 m where the constant-velocity assumption becomes measurably inaccurate.
-
 **Adversarial dataset generation.** The generator's parametric control enables systematic stress-testing of localisation algorithms: sweeps over shooter range, trajectory angle, SNR, and array geometry can expose failure modes that are rare in opportunistically collected field data. This capability will be used in a follow-on study to characterise the localisation algorithm's operating envelope and guide the design of the FPGA real-time implementation.
 
 ---
 
 ## 6. Conclusion
 
-A physics-based acoustic gunshot signal generator was presented and validated against real multichannel recordings from two weapon classes. The generator reproduces measured waveform shape, spectral structure, and inter-sensor TDOAs with sufficient fidelity — Pearson $r > 0.91$, coherence $> 0.80$ across primary event bandwidth, TDOA MAE $< 6$ µs — to serve as a reliable controlled reference for TDOA estimator benchmarking. Three unmodelled physical effects (ground reflection, bullet deceleration, directional muzzle radiation) were identified and quantified as the principal sources of residual error, providing a clear roadmap for model refinement. The generator is released alongside this paper as open-source Python, parameterised by a single configuration dictionary, producing output directly compatible with standard GCC-PHAT pipelines.
+Acoustic gunshot detection systems for law enforcement, military force protection, and urban security are fundamentally limited by the scarcity of well-characterised, annotated multichannel recordings. Live-fire data collection is hazardous, logistically constrained, and difficult to reproduce under controlled conditions — a bottleneck that impedes both algorithm development and systematic benchmarking. This paper addressed that bottleneck directly by presenting a physics-based acoustic gunshot signal generator capable of producing multichannel recordings of arbitrary size with analytically exact ground-truth labels, requiring no live-fire experiments.
+
+The generator models the two physically distinct acoustic events produced by a supersonic gunshot — the ballistic shockwave N-wave via Whitham weak-shock scaling and the muzzle blast Friedlander pulse via Hopkinson–Cranz scaling — and renders both onto a per-sensor timeline with geometrically correct propagation delays, range-dependent amplitude, and configurable noise. A single weapon-specific calibration, derived from one reference recording, parameterises the generator for all subsequent trials of that weapon class.
+
+Validation against the Zenodo multichannel gunshot dataset confirmed that the synthesised signals faithfully reproduce real recordings: Pearson correlation $r > 0.91$, spectral coherence above 0.80 within the primary event bandwidth, peak overpressure and duration errors below 9%, and GCC-PHAT TDOA mean absolute error below 6 µs across both supersonic and subsonic weapon types. These results establish that the generator is a viable controlled substitute for live-fire data in TDOA estimator development and benchmarking — directly addressing the data scarcity problem identified in the introduction.
+
+Three unmodelled physical effects — ground reflection, bullet deceleration, and directional muzzle radiation — were isolated as the principal sources of residual error, each with a clear remediation path. The generator is released as open-source Python, parameterised by a single configuration dictionary, producing output directly compatible with standard GCC-PHAT pipelines and suitable for systematic sweeps over shooter geometry, SNR, and array configuration that would be impractical to conduct through live-fire experimentation.
+
+---
 
 ## References
-
----
-
-### Gunshot Detection and Localization Systems
-
 [1] R. L. Showen, "Operational gunshot location detection in high-noise environments," in *Proc. SPIE — Surveillance and Assessment Technologies for Law Enforcement*, vol. 3577, Boston, MA, USA, Nov. 1998, pp. 1–12.
-
 [2] R. C. Maher, "Acoustical characterization of gunshots," in *Proc. IEEE Workshop on Signal Processing Applications for Public Security and Forensics (SAFE)*, Lisbon, Portugal, Apr. 2007, pp. 1–5.
-
 [3] T. Damarla, *Battlefield Acoustic Sensing for ISR Applications*. Amsterdam, Netherlands: IOS Press, 2014.
-
----
-
-### Shockwave Physics — Whitham N-Wave Model
-
 [4] G. B. Whitham, "The flow pattern of a supersonic projectile," *Communications on Pure and Applied Mathematics*, vol. 5, no. 3, pp. 301–348, 1952.
-
 [5] G. B. Whitham, *Linear and Nonlinear Waves*. New York, NY, USA: John Wiley & Sons, 1974.
-
 [6] R. Stoughton, "Measurements of small-caliber ballistic shock waves in air," *Journal of the Acoustical Society of America*, vol. 102, no. 2, pp. 781–787, Aug. 1997.
-
----
-
-### Muzzle Blast — Friedlander Pulse and Hopkinson–Cranz Scaling
-
 [7] F. G. Friedlander, "The diffraction of sound pulses. I. Diffraction by a semi-infinite plane," *Proceedings of the Royal Society of London. Series A, Mathematical and Physical Sciences*, vol. 186, no. 1006, pp. 322–344, Nov. 1946.
-
 [8] G. F. Kinney and K. J. Graham, *Explosive Shocks in Air*, 2nd ed. Berlin, Germany: Springer-Verlag, 1985.
-
 [9] C. N. Kingery and G. Bulmash, "Airblast parameters from TNT spherical air burst and hemispherical surface burst," Ballistic Research Laboratory, Aberdeen Proving Ground, MD, USA, Tech. Rep. ARBRL-TR-02555, Apr. 1984.
-
----
-
-### Acoustic Propagation and Atmospheric Absorption
-
 [10] International Organization for Standardization, *Acoustics — Attenuation of Sound During Propagation Outdoors — Part 1: Calculation of the Absorption of Sound by the Atmosphere*, ISO 9613-1:1993, Geneva, Switzerland, 1993.
-
 [11] E. M. Salomons, *Computational Atmospheric Acoustics*. Dordrecht, Netherlands: Kluwer Academic Publishers, 2001.
-
----
-
-### TDOA Estimation
-
 [12] C. H. Knapp and G. C. Carter, "The generalized correlation method for estimation of time delay," *IEEE Transactions on Acoustics, Speech, and Signal Processing*, vol. 24, no. 4, pp. 320–327, Aug. 1976.
-
 [13] J. Chen, J. Benesty, and Y. A. Huang, "Time delay estimation in room acoustic environments: An overview," *EURASIP Journal on Advances in Signal Processing*, vol. 2006, Art. no. 026503, 2006.
-
 [14] M. Brandstein and D. Ward, Eds., *Microphone Arrays: Signal Processing Techniques and Applications*. Berlin, Germany: Springer-Verlag, 2001.
-
----
-
-### Source Localization from TDOAs
-
 [15] Y. T. Chan and K. C. Ho, "A simple and efficient estimator for hyperbolic location," *IEEE Transactions on Signal Processing*, vol. 42, no. 8, pp. 1905–1915, Aug. 1994.
-
 [16] H. C. Schau and A. Z. Robinson, "Passive source localization employing intersecting spherical surfaces from time-of-arrival differences," *IEEE Transactions on Acoustics, Speech, and Signal Processing*, vol. 35, no. 8, pp. 1223–1225, Aug. 1987.
-
 [17] J. O. Smith and J. S. Abel, "Closed-form least-squares source location estimation from range-difference measurements," *IEEE Transactions on Acoustics, Speech, and Signal Processing*, vol. 35, no. 12, pp. 1661–1669, Dec. 1987.
-
----
-
-### Exterior Ballistics
-
 [18] R. L. McCoy, *Modern Exterior Ballistics: The Launch and Flight Dynamics of Symmetric Projectiles*. Atglen, PA, USA: Schiffer Military History, 1999.
-
----
-
 ### Dataset
-
 [19] [Author(s)], "[Dataset title]," Zenodo, [Year]. [Online]. Available: https://doi.org/10.5281/zenodo.[XXXXXX]. [Accessed: DD-Mon-YYYY]. *(Fill in with the specific Zenodo record DOI.)*
-
----
 
 > **Three references to verify before submission:**
 >
