@@ -643,23 +643,41 @@ Three unmodelled physical effects — ground reflection, bullet deceleration, an
 
 ## References
 [1] R. L. Showen, "Operational gunshot location detection in high-noise environments," in *Proc. SPIE — Surveillance and Assessment Technologies for Law Enforcement*, vol. 3577, Boston, MA, USA, Nov. 1998, pp. 1–12.
+
 [2] R. C. Maher, "Acoustical characterization of gunshots," in *Proc. IEEE Workshop on Signal Processing Applications for Public Security and Forensics (SAFE)*, Lisbon, Portugal, Apr. 2007, pp. 1–5.
+
 [3] T. Damarla, *Battlefield Acoustic Sensing for ISR Applications*. Amsterdam, Netherlands: IOS Press, 2014.
+
 [4] G. B. Whitham, "The flow pattern of a supersonic projectile," *Communications on Pure and Applied Mathematics*, vol. 5, no. 3, pp. 301–348, 1952.
+
 [5] G. B. Whitham, *Linear and Nonlinear Waves*. New York, NY, USA: John Wiley & Sons, 1974.
+
 [6] R. Stoughton, "Measurements of small-caliber ballistic shock waves in air," *Journal of the Acoustical Society of America*, vol. 102, no. 2, pp. 781–787, Aug. 1997.
+
 [7] F. G. Friedlander, "The diffraction of sound pulses. I. Diffraction by a semi-infinite plane," *Proceedings of the Royal Society of London. Series A, Mathematical and Physical Sciences*, vol. 186, no. 1006, pp. 322–344, Nov. 1946.
+
 [8] G. F. Kinney and K. J. Graham, *Explosive Shocks in Air*, 2nd ed. Berlin, Germany: Springer-Verlag, 1985.
+
 [9] C. N. Kingery and G. Bulmash, "Airblast parameters from TNT spherical air burst and hemispherical surface burst," Ballistic Research Laboratory, Aberdeen Proving Ground, MD, USA, Tech. Rep. ARBRL-TR-02555, Apr. 1984.
+
 [10] International Organization for Standardization, *Acoustics — Attenuation of Sound During Propagation Outdoors — Part 1: Calculation of the Absorption of Sound by the Atmosphere*, ISO 9613-1:1993, Geneva, Switzerland, 1993.
+
 [11] E. M. Salomons, *Computational Atmospheric Acoustics*. Dordrecht, Netherlands: Kluwer Academic Publishers, 2001.
+
 [12] C. H. Knapp and G. C. Carter, "The generalized correlation method for estimation of time delay," *IEEE Transactions on Acoustics, Speech, and Signal Processing*, vol. 24, no. 4, pp. 320–327, Aug. 1976.
+
 [13] J. Chen, J. Benesty, and Y. A. Huang, "Time delay estimation in room acoustic environments: An overview," *EURASIP Journal on Advances in Signal Processing*, vol. 2006, Art. no. 026503, 2006.
+
 [14] M. Brandstein and D. Ward, Eds., *Microphone Arrays: Signal Processing Techniques and Applications*. Berlin, Germany: Springer-Verlag, 2001.
+
 [15] Y. T. Chan and K. C. Ho, "A simple and efficient estimator for hyperbolic location," *IEEE Transactions on Signal Processing*, vol. 42, no. 8, pp. 1905–1915, Aug. 1994.
+
 [16] H. C. Schau and A. Z. Robinson, "Passive source localization employing intersecting spherical surfaces from time-of-arrival differences," *IEEE Transactions on Acoustics, Speech, and Signal Processing*, vol. 35, no. 8, pp. 1223–1225, Aug. 1987.
+
 [17] J. O. Smith and J. S. Abel, "Closed-form least-squares source location estimation from range-difference measurements," *IEEE Transactions on Acoustics, Speech, and Signal Processing*, vol. 35, no. 12, pp. 1661–1669, Dec. 1987.
+
 [18] R. L. McCoy, *Modern Exterior Ballistics: The Launch and Flight Dynamics of Symmetric Projectiles*. Atglen, PA, USA: Schiffer Military History, 1999.
+
 ### Dataset
 [19] [Author(s)], "[Dataset title]," Zenodo, [Year]. [Online]. Available: https://doi.org/10.5281/zenodo.[XXXXXX]. [Accessed: DD-Mon-YYYY]. *(Fill in with the specific Zenodo record DOI.)*
 
