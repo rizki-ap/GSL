@@ -544,6 +544,7 @@ Nonzero bias indicates a systematic modelling error (incorrect speed of sound, c
 Fig. 2 overlays synthesised and measured waveforms at a representative sensor for each weapon class.**Fig. 2.** Synthesised vs. measured waveforms with per-event morphology metrics. Ruger .223 (left): N-wave at $t \approx 0$ ms, muzzle blast at $t \approx 1.4$ ms; Pearson $r = 0.941$ overall. Glock 9 mm (right): single Friedlander event; $r = 0.918$. Late-time oscillations (ground reflection, directional onset asymmetry) are unmodelled.
 
 Pearson coefficients above 0.91 for both weapon types confirm that the synthesised waveforms reproduce the measured shape with high fidelity over the positive phase. SNR$_\text{synth}$ values of 9.7–11.3 dB reflect residual error concentrated in the unmodelled negative phase and late-time reflections rather than in the primary event. Peak overpressure and duration errors remain below 9% across all trials, consistent with the expected accuracy of Whitham and Hopkinson–Cranz scaling at these ranges.
+
 <img src="GSL-generator-compare.png" alt="Connector" width="400">
 
 ---
