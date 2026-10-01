@@ -129,7 +129,7 @@ These are the complete inputs to the generator. Every quantity that follows — 
 
 Eight inputs. Everything else is computed.
 
-*Author Note: The minimal viable call for a single supersonic shot with a 4-sensor array is therefore six numbers for geometry ($\mathbf{x}_s$ and $\hat{\mathbf{u}}$), twelve for the array ($4 \times 3$ sensor positions), two for the bullet ($d, v_b$), one for the environment ($T$), and one for the output ($f_s$) — twenty-two scalars total.*
+The minimal viable call for a single supersonic shot with a 4-sensor array is therefore six numbers for geometry ($\mathbf{x}_s$ and $\hat{\mathbf{u}}$), twelve for the array ($4 \times 3$ sensor positions), two for the bullet ($d, v_b$), one for the environment ($T$), and one for the output ($f_s$) — twenty-two scalars total.
 
 ### 3.3 Geometric Computation
 
@@ -145,7 +145,7 @@ $$ \tau_{sw,i} = \frac{r_{\perp,i}}{c} $$
 
 This stage takes the scene parameters and resolves all spatial relationships before any waveform is synthesised. It has three jobs: find where each acoustic event *appears to come from*, compute how long it takes to reach each sensor, and produce the ground-truth TDOA labels.
 
-*Author Note: The shockwave is not a point source. It radiates continuously from every point along the bullet's flight path. What a sensor *hears* is the wavefront that was emitted from the specific point on the trajectory where the Mach cone intersects the sensor's perpendicular — the **foot of the perpendicular** from the sensor to the bullet ray.*
+The shockwave is not a point source. It radiates continuously from every point along the bullet's flight path. What a sensor *hears* is the wavefront that was emitted from the specific point on the trajectory where the Mach cone intersects the sensor's perpendicular — the **foot of the perpendicular** from the sensor to the bullet ray.
 
 Given shooter position $\mathbf{x}_s$ and bullet direction unit vector $\hat{\mathbf{u}}$, the apparent origin for sensor $i$ is:
 
@@ -164,7 +164,7 @@ The muzzle blast originates at the shooter position $\mathbf{x}_s$. The propagat
 
 $$ \tau_{mb,i} = \frac{\|\mathbf{x}_i - \mathbf{x}_s\|}{c} $$
 
-*Author Note: The muzzle blast originates from a fixed point: the shooter position $\mathbf{x}_s$. Unlike the shockwave, there is no apparent-origin calculation — the source is always the muzzle. This simplicity is why muzzle blast TDOAs are so useful for localisation — the geometry is clean.*
+The muzzle blast originates from a fixed point: the shooter position $\mathbf{x}_s$. Unlike the shockwave, there is no apparent-origin calculation — the source is always the muzzle. This simplicity is why muzzle blast TDOAs are so useful for localisation — the geometry is clean.
 
 #### 3.3.3 Absolute Timing
 
@@ -174,12 +174,12 @@ $$ \Delta \tau_{ij}^{(\cdot)} = \tau_{(\cdot),i} - \tau_{(\cdot),j} $$
 
 These TDOAs constitute the ground-truth labels against which the estimator is later validated.
 
-*Author Note: A global time reference $t_0=0$ is set at the moment of discharge. Every per-sensor delay is expressed relative to this. The inter-sensor TDOAs are then:*
+A global time reference $tf_0=0$ is set at the moment of discharge. Every per-sensor delay is expressed relative to this. The inter-sensor TDOAs are then:
 $$ \Delta \tau_{ij}^{sw} = \tau_{sw,i} - \tau_{sw,j} \quad \text{(shockwave TDOA, sensors } i \text{ and } j) $$
 $$ \Delta \tau_{ij}^{mb} = \tau_{mb,i} - \tau_{mb,j} \quad \text{(muzzle blast TDOA)} $$
 *These are written out as **ground-truth labels** — the exact values the GCC-PHAT estimator will later be compared against during Zenodo validation.*
 
-*Author Note: One Non-obvious Detail — Ordering Guarantee. For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.*
+One Non-obvious Detail — Ordering Guarantee. For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
 
 #### Output of Stage I
 
@@ -193,7 +193,7 @@ $$ \Delta \tau_{ij}^{mb} = \tau_{mb,i} - \tau_{mb,j} \quad \text{(muzzle blast T
 
 All of these are computed analytically in a few lines of NumPy — Stage I has no iterative solver, no approximation, and no failure mode. It is the most reliable part of the pipeline.
 
-*Author Note: The one assumption baked in here is that the bullet travels in a straight line at constant velocity — no drag, no drop. For the ranges involved in the Zenodo dataset (tens of metres) this is a very good approximation.*
+The one assumption baked in here is that the bullet travels in a straight line at constant velocity — no drag, no drop. For the ranges involved in the Zenodo dataset (tens of metres) this is a very good approximation.
 
 ### 3.4 Shockwave N-Wave Synthesis
 
@@ -229,7 +229,7 @@ Here's an interactive synthesis widget showing exactly how the waveform shape re
 - **Increasing calibre** at fixed range: amplitude grows as $d^{3/4}$ and duration grows as $d^{1/2}$. A .308 rifle (7.62 mm) produces a stronger *and* longer N-wave than a 9 mm pistol at the same perpendicular distance — both effects compound.
 - **Increasing range** at fixed calibre: amplitude decays as $r_\perp^{-3/4}$ (slower than geometric $r^{-1}$) and duration stretches as $r_\perp^{1/4}$ (slowly — doubling range only adds ~19% to $T^+$). At long range the wave becomes wide and flat; at short range it is sharp and tall. This is the distinguishing signature of a weak shock vs a linear acoustic wave.
 
-*Author Note: Ready to move on to **Section 4 — Validation against the Zenodo dataset**?*
+---
 
 ### 3.5 Muzzle Blast Synthesis
 
@@ -270,7 +270,7 @@ The output is an $N \times L$ matrix of multichannel time-domain samples, with a
 5. **Additive Noise**: White Gaussian noise is added to each channel independently at the specified SNR.
 6. **Output**: An $N \times L$ matrix of floating-point samples, written alongside a metadata dictionary containing ground-truth TDOAs, geometry, and synthesis constants.
 
-*Author Note: The key constraint this stage enforces is that every sensor sees the same two events, at different delays and amplitudes determined entirely by geometry and physics. There are no free parameters at render time — given the scene parameters from Section 3.2, the output is fully deterministic (before noise). This is what makes the generator useful for validation: the ground-truth TDOAs are exact, not inferred.*
+The key constraint this stage enforces is that every sensor sees the same two events, at different delays and amplitudes determined entirely by geometry and physics. There are no free parameters at render time — given the scene parameters from Section 3.2, the output is fully deterministic (before noise). This is what makes the generator useful for validation: the ground-truth TDOAs are exact, not inferred.
 
 ### Interactive view — what the composite signal looks like
 
@@ -428,7 +428,7 @@ A physics-based acoustic gunshot signal generator was presented and validated ag
 
 ## References
 
-[1] R. L. Showen, "Operational gunshot location detection in high-noise environments," in *Proc. SPIE — Surveillance and Assessment Technologies for Law Enforcement*, vol. 3577, Boston, MA, USA, Nov. 1998, pp. 1–12. *(Author Note: Confirm SPIE volume number and page range — the 1998 SPIE conference proceedings for this title have been reformatted across editions.)*
+[1] R. L. Showen, "Operational gunshot location detection in high-noise environments," in *Proc. SPIE — Surveillance and Assessment Technologies for Law Enforcement*, vol. 3577, Boston, MA, USA, Nov. 1998, pp. 1–12. 
 
 [2] R. C. Maher, "Acoustical characterization of gunshots," in *Proc. IEEE Workshop on Signal Processing Applications for Public Security and Forensics (SAFE)*, Lisbon, Portugal, Apr. 2007, pp. 1–5.
 
@@ -444,7 +444,7 @@ A physics-based acoustic gunshot signal generator was presented and validated ag
 
 [8] G. F. Kinney and K. J. Graham, *Explosive Shocks in Air*, 2nd ed. Berlin, Germany: Springer-Verlag, 1985.
 
-[9] C. N. Kingery and G. Bulmash, "Airblast parameters from TNT spherical air burst and hemispherical surface burst," Ballistic Research Laboratory, Aberdeen Proving Ground, MD, USA, Tech. Rep. ARBRL-TR-02555, Apr. 1984. *(Author Note: The Kingery–Bulmash report is a US government technical document. Some journals require the full DTIC accession number (AD-B082713L) in addition to the report number — check your target journal's policy for grey literature.)*
+[9] C. N. Kingery and G. Bulmash, "Airblast parameters from TNT spherical air burst and hemispherical surface burst," Ballistic Research Laboratory, Aberdeen Proving Ground, MD, USA, Tech. Rep. ARBRL-TR-02555, Apr. 1984.
 
 [10] International Organization for Standardization, *Acoustics — Attenuation of Sound During Propagation Outdoors — Part 1: Calculation of the Absorption of Sound by the Atmosphere*, ISO 9613-1:1993, Geneva, Switzerland, 1993.
 
@@ -464,7 +464,7 @@ A physics-based acoustic gunshot signal generator was presented and validated ag
 
 [18] R. L. McCoy, *Modern Exterior Ballistics: The Launch and Flight Dynamics of Symmetric Projectiles*. Atglen, PA, USA: Schiffer Military History, 1999.
 
-[19] R. Kabealo and S. J. Wyatt, "Gunshot/Gunfire Audio Dataset," Zenodo, 2022. [Online]. Available: https://doi.org/10.5281/zenodo.7004819. *(Author Note: Resolved — DOI and dataset details verified and added.)*
+[19] R. Kabealo and S. J. Wyatt, "Gunshot/Gunfire Audio Dataset," Zenodo, 2022. [Online]. Available: https://doi.org/10.5281/zenodo.7004819. 
 
 [20] G. L. Duckworth, D. C. Gilbert, and J. E. Barger, "Acoustic counter-sniper system," in *Proc. SPIE Int. Symp. Enabling Technologies for Law Enforcement and Security*, vol. 2938, Boston, MA, USA, Feb. 1997, pp. 122–133.
 
