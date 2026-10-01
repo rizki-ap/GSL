@@ -93,7 +93,7 @@ The speed of sound $c$ is derived from $T$ as in Section 2.4. The Mach number $M
 These are the complete inputs to the generator. Every quantity that follows — delays, waveform shapes, amplitudes, TDOAs — is derived from these alone.
 
 - **Bullet Parameters**
-  - **Calibre $d$ (metres)**: The projectile diameter. Feeds directly into the N-wave scaling — both peak overpressure and positive phase duration scale with $d$. In practice user supply a named calibre (9 mm, .223, .308) and the generator converts to metres.
+  - **Calibre $d$ (metres)**: The projectile diameter. Feeds directly into the N-wave scaling — both peak overpressure and positive phase duration scale with $d$. In practice the user supplies a named calibre (9 mm, .223, .308) and the generator converts to metres.
   - **Muzzle velocity $v_b$ (m/s)**: The bullet's speed as it exits the barrel. Together with the ambient speed of sound $c$, this determines the Mach number $M = v_b/c$. If $M \le 1$ the shockwave branch is bypassed entirely — the generator produces only the Friedlander muzzle blast, as with the 9 mm subsonic case in the Zenodo dataset.
 
 - **Source Geometry**
@@ -186,7 +186,7 @@ For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzl
 
 All of these are computed analytically in a few lines of NumPy — Stage I has no iterative solver, no approximation, and no failure mode. It is the most reliable part of the pipeline.
 
-The one assumption in here is that the bullet travels in a straight line at constant velocity — no drag, no drop. For the ranges involved in the Zenodo dataset (tens of metres) this is a very good approximation.
+The one assumption made here is that the bullet travels in a straight line at constant velocity — no drag, no drop. For the ranges involved in the Zenodo dataset (tens of metres) this is a very good approximation.
 
 ### 3.4 Shockwave N-Wave Synthesis
 
