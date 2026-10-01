@@ -164,7 +164,7 @@ The muzzle blast originates at the shooter position $\mathbf{x}_s$. The propagat
 
 $$ \tau_{mb,i} = \frac{\|\mathbf{x}_i - \mathbf{x}_s\|}{c} $$
 
-The muzzle blast originates from a fixed point: the shooter position $\mathbf{x}_s$. Unlike the shockwave, there is no apparent-origin calculation — the source is always the muzzle. This simplicity is why muzzle blast TDOAs are so useful for localisation — the geometry is clean.
+Unlike the shockwave, there is no apparent-origin calculation — the source is always the muzzle. This simplicity is why muzzle blast TDOAs are so useful for localisation — the geometry is clean.
 
 #### 3.3.3 Absolute Timing
 
@@ -174,7 +174,7 @@ $$ \Delta \tau_{ij}^{(\cdot)} = \tau_{(\cdot),i} - \tau_{(\cdot),j} $$
 
 These TDOAs constitute the ground-truth labels against which the estimator is later validated.
 
-A global time reference $tf_0=0$ is set at the moment of discharge. Every per-sensor delay is expressed relative to this. The inter-sensor TDOAs are then:
+Every per-sensor delay is expressed relative to this. The inter-sensor TDOAs are then:
 $$ \Delta \tau_{ij}^{sw} = \tau_{sw,i} - \tau_{sw,j} \quad \text{(shockwave TDOA, sensors } i \text{ and } j) $$
 $$ \Delta \tau_{ij}^{mb} = \tau_{mb,i} - \tau_{mb,j} \quad \text{(muzzle blast TDOA)} $$
 *These are written out as **ground-truth labels** — the exact values the GCC-PHAT estimator will later be compared against during Zenodo validation.*
@@ -291,6 +291,8 @@ The generator is implemented in Python using NumPy for array operations and SciP
 - **The Signal Matrix**: An $N \times L$ array of floating-point samples. Each row is one sensor's complete time-domain recording. Every row shares the same time axis, so column $n$ corresponds to time $t = n/f_s$ across all sensors simultaneously.
 - **The Label Bundle**: Alongside the matrix, the generator writes a dictionary of ground-truth quantities. The validation metric is then simply: $\epsilon_{ij} = \widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}}$. Because the labels are analytically exact, any nonzero $\epsilon_{ij}$ is unambiguously attributable to estimator error.
 - **What the TDOA matrices look like in practice**: For a 4-sensor array the shockwave TDOA matrix $\Delta \tau^{sw}$ is $4 \times 4$, antisymmetric, with zeros on the diagonal. Only the upper triangle is independent — six unique TDOA values from which bullet direction is recovered. The muzzle blast matrix $\Delta \tau^{mb}$ has the same structure and provides the six values from which shooter position (including range) is recovered. Together, twelve TDOAs constrain a 5-DOF problem (3D shooter position + 2D bullet direction), giving significant redundancy.
+
+---
 
 ## 4. Validation Against the Zenodo Dataset
 
