@@ -175,21 +175,60 @@ The minimal viable call for a single supersonic shot with a 4-sensor array is th
 ### 3.3 Geometric Computation
 
 #### 3.3.1 Shockwave Apparent Origin
+#### 3.3.1 Shockwave Apparent Origin and Arrival Time
 
-The shockwave heard at sensor $i$ originates from the point along the bullet trajectory where the Mach cone intersects the sensor's perpendicular. The shockwave is not a point source. It radiates continuously from every point along the bullet's flight path. What a sensor *hears* is the wavefront that was emitted from the specific point on the trajectory where the Mach cone intersects the sensor's perpendicular — the **foot of the perpendicular** from the sensor to the bullet ray.
+A ballistic shockwave is generated continuously along the trajectory of a supersonic projectile. The shockwave received by a sensor is associated with the Mach cone emitted by the moving projectile, rather than with the closest point on the trajectory alone. Consequently, the shockwave arrival time must account for both the projectile's travel time to the emission point and the acoustic propagation time from that point to the sensor.
 
-Given shooter position $\mathbf{x}_s$ and bullet direction unit vector $\hat{\mathbf{u}}$, the apparent origin for sensor $i$ is:
+Let the muzzle position be \(\mathbf{x}_s\), the sensor position be \(\mathbf{x}_i\), and the unit vector of the projectile trajectory be \(\hat{\mathbf{u}}\). The relative sensor position is
 
-$$ \mathbf{x}_{sw,i} = \mathbf{x}_s + \underbrace{\left[ (\mathbf{x}_i - \mathbf{x}_s) \cdot \hat{\mathbf{u}} \right]}_{\text{scalar projection}} \hat{\mathbf{u}} $$
+$$ \mathbf{q}_i=\mathbf{x}_i-\mathbf{x}_s. $$
 
-This is a straightforward vector projection — project the sensor's position onto the bullet ray and find the closest point. Three quantities follow immediately:
+The along-track projection and perpendicular standoff distance are
 
-$$ r_{\perp,i} = \|\mathbf{x}_i - \mathbf{x}_{sw,i}\| \quad \text{(perpendicular standoff distance)} $$
-$$ \tau_{sw,i} = \frac{r_{\perp,i}}{c} \quad \text{(shockwave propagation delay to sensor } i) $$
+$$ a_i=\mathbf{q}_i\cdot\hat{\mathbf{u}}, \qquad r_{\perp,i}= \left\|\mathbf{q}_i-a_i\hat{\mathbf{u}}\right\|. $$
 
-Note that $r_{\perp,i}$ also feeds directly into the N-wave amplitude and duration expressions in Stage II — it is not just a timing quantity.
+For a projectile travelling at constant supersonic velocity \(v_b\), define the Mach number \(M=v_b/c>1\) and \(\beta=\sqrt{M^2-1}\), where \(c\) is the ambient speed of sound.
 
-This stage takes the scene parameters and resolves all spatial relationships before any waveform is synthesised. It has three jobs: find where each acoustic event *appears to come from*, compute how long it takes to reach each sensor, and produce the ground-truth TDOA labels.
+The Mach-cone geometry gives the along-track coordinate of the shockwave emission point as
+
+$$
+s_i=a_i-\frac{r_{\perp,i}}{\beta}.
+$$
+
+Provided that \(s_i\geq0\), the apparent origin of the shockwave received by sensor \(i\) is
+
+$$
+\boxed{
+\mathbf{x}_{sw,i}=\mathbf{x}_s+s_i\hat{\mathbf{u}}.
+}
+$$
+
+The acoustic propagation distance from this point to the sensor is
+
+$$
+R_{sw,i}
+=\left\|\mathbf{x}_i-\mathbf{x}_{sw,i}\right\|
+=\frac{M r_{\perp,i}}{\sqrt{M^2-1}}.
+$$
+
+Taking the instant of projectile discharge as \(t_0=0\), the shockwave arrival time comprises the projectile travel time to the emission point and the subsequent acoustic propagation time:
+
+$$
+t_{sw,i}
+=\frac{s_i}{v_b}+\frac{R_{sw,i}}{c}.
+$$
+
+Substituting the expressions above yields
+
+$$
+\boxed{
+t_{sw,i}=
+\frac{a_i+r_{\perp,i}\sqrt{M^2-1}}{Mc}.
+}
+$$
+
+This expression gives the absolute shockwave arrival time for a straight, constant-velocity projectile trajectory in a stationary, homogeneous medium. The perpendicular distance \(r_{\perp,i}\) is also used to determine the N-wave amplitude and duration. The arrival-time calculation and waveform-amplitude model therefore share the same sensor-to-trajectory geometry, while representing distinct physical quantities.
+
 
 #### 3.3.2 Muzzle Blast Origin
 
