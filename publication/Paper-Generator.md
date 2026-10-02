@@ -235,10 +235,6 @@ These are written out as **ground-truth labels** — the exact values the GCC-PH
 
 For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
 
-guaranteed or dependant :
-For supersonic ammunition, the shockwave and muzzle-blast arrival times are determined independently from their respective source geometries. The shockwave is emitted from a point along the projectile trajectory, whereas the muzzle blast originates at the muzzle. Their relative arrival order therefore depends on the projectile trajectory, sensor position, and propagation conditions. Although the shockwave often arrives before the muzzle blast, this ordering is not assumed to hold universally. The generated waveforms may overlap in time, depending on their relative arrival times and durations.
-
-
 #### Output of Stage I
 
 | Quantity | Shape | Used by |
@@ -257,7 +253,7 @@ The one assumption made here is that the bullet travels in a straight line at co
 
 The canonical N-wave for sensor $i$ is synthesized as a discrete-time signal at sample rate $f_s$. The waveform is defined over a time window $[-T_{+,i}/2, T_{+,i}/2]$ centered on the shock arrival:
 
-$$ p_{sw}(t) = \begin{cases} \Delta p_i \left(1 - \frac{2t}{T_{+,i}}\right) & -T_{+,i}/2 \le t \le T_{+,i}/2 \\ 0 & \text{otherwise} \end{cases} $$
+$$ p_{sw}(t) = \begin{cases} \Delta p_i \left( \frac{2t}{T_{+,i}}\right) & -T_{+,i}/2 \le t \le T_{+,i}/2 \\ 0 & \text{otherwise} \end{cases} $$
 
 The peak overpressure and positive phase duration are computed from the Whitham scaling relations:
 
@@ -349,7 +345,7 @@ The generator is implemented in Python using NumPy for array operations and SciP
 Validation is performed against the publicly available *Gunshot/Gunfire Audio Dataset* hosted on Zenodo **[19]**. This dataset comprises multi-firearm, multi-orientation outdoor free-field recordings captured with a calibrated array of edge devices, with known shooter position and weapon type logged for each trial. Two weapon classes are used in this study:
 
 - **Ruger Mini-14, .223 Remington / 5.56 mm NATO**: supersonic ammunition ($v_b \approx 960$ m/s, $M \approx 2.80$). Recordings show the double-event structure: a sharp N-wave precursor followed by the lower-frequency muzzle blast. Both generator branches are active.
-- **Glock 17, 9 mm Parabellum**: subsonic ammunition ($v_b \approx 370$ m/s, $M \approx 1.08$ at muzzle, effectively subsonic at array range after deceleration). Recordings show a single merged pressure event with no separable N-wave. Only the Friedlander branch is active.
+- **Glock 17, 9 mm Parabellum**: transonic ammunition ($v_b \approx 370$ m/s, $M \approx 1.08$ at muzzle, effectively subsonic at array range after deceleration). Recordings show a single merged pressure event with no separable N-wave. Only the Friedlander branch is active.
 
 For each trial the dataset provides raw multichannel waveforms at $f_s = 48,000$ Hz, array geometry $\mathbf{x}_i$, ambient temperature, and ground-truth shooter position. Bullet direction $\hat{\mathbf{u}}$ is inferred from logged shooter and target positions.
 
@@ -462,7 +458,7 @@ The generator is calibrated on two weapon classes. The underlying physics — Wh
 Four limitations are explicitly acknowledged:
 1. **Subsonic shockwave model absent**: For the Glock 9 mm, the generator produces only the Friedlander muzzle blast.
 2. **Single-propagation-path model**: Beyond ground reflection, the generator does not model urban canyon multipath, vegetation scattering, or barrier diffraction.
-3. **Noise model simplicity**: Atmospheric model scope. The generator implements ISO 9613-1 absorption and first-order wind correction via effective sound speed. Temperature gradient refraction and turbulence are excluded; their combined TDOA contribution is estimated below 5 µs at the validation ranges (< 50 m) and is therefore within the AWGN noise floor at the SNR levels tested. For longer-range deployments (> 100 m) or environments with strong thermal stratification, a ray-tracing propagation model would be required and the current atmospheric model would underestimate propagation delay errors. Additionally, the AWGN channel noise model does not capture spatially correlated ambient noise sources — wind turbulence, traffic, machinery — which have a substantially different spectral shape than white noise. A coloured noise extension parameterised by a measured ambient noise power spectral density would improve realism for such environments.
+3. **Atmospheric and noise model limitations**: The generator implements ISO 9613-1 absorption and first-order wind correction via effective sound speed. Temperature gradient refraction and turbulence are excluded; their combined TDOA contribution is estimated below 5 µs at the validation ranges (< 50 m) and is therefore within the AWGN noise floor at the SNR levels tested. For longer-range deployments (> 100 m) or environments with strong thermal stratification, a ray-tracing propagation model would be required and the current atmospheric model would underestimate propagation delay errors. Additionally, the AWGN channel noise model does not capture spatially correlated ambient noise sources — wind turbulence, traffic, machinery — which have a substantially different spectral shape than white noise. A coloured noise extension parameterised by a measured ambient noise power spectral density would improve realism for such environments.
 4. **Calibration dependency**: The generator requires at least one reference recording per weapon class to set $W, K_p, K_T$.
 
 ### 5.6 Future Work
