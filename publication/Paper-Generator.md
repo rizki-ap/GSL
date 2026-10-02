@@ -253,7 +253,7 @@ The one assumption made here is that the bullet travels in a straight line at co
 
 The canonical N-wave for sensor $i$ is synthesized as a discrete-time signal at sample rate $f_s$. The waveform is defined over a time window $[-T_{+,i}/2, T_{+,i}/2]$ centered on the shock arrival:
 
-$$ p_{sw}(t) = \begin{cases} \Delta p_i \left( \frac{2t}{T_{+,i}}\right) & -T_{+,i}/2 \le t \le T_{+,i}/2 \\ 0 & \text{otherwise} \end{cases} $$
+$$ p_{sw}(t) = \begin{cases} -\Delta p_i \left(\frac{2t}{T_{+,i}}\right) & -T_{+,i}/2 \le t \le T_{+,i}/2 \\ 0 & \text{otherwise} \end{cases} $$
 
 The peak overpressure and positive phase duration are computed from the Whitham scaling relations:
 
