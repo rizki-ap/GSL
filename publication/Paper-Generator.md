@@ -235,6 +235,10 @@ These are written out as **ground-truth labels** — the exact values the GCC-PH
 
 For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
 
+guaranteed or dependant :
+For supersonic ammunition, the shockwave and muzzle-blast arrival times are determined independently from their respective source geometries. The shockwave is emitted from a point along the projectile trajectory, whereas the muzzle blast originates at the muzzle. Their relative arrival order therefore depends on the projectile trajectory, sensor position, and propagation conditions. Although the shockwave often arrives before the muzzle blast, this ordering is not assumed to hold universally. The generated waveforms may overlap in time, depending on their relative arrival times and durations.
+
+
 #### Output of Stage I
 
 | Quantity | Shape | Used by |
