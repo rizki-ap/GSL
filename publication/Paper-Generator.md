@@ -228,12 +228,14 @@ $$ \Delta \tau_{ij}^{(\cdot)} = \tau_{(\cdot),i} - \tau_{(\cdot),j} $$
 These TDOAs constitute the ground-truth labels against which the estimator is later validated.
 
 Every per-sensor delay is expressed relative to this. The inter-sensor TDOAs are then:
+
 $$ \Delta \tau_{ij}^{sw} = \tau_{sw,i} - \tau_{sw,j} \quad \text{(shockwave TDOA, sensors } i \text{ and } j) $$
+
 $$ \Delta \tau_{ij}^{mb} = \tau_{mb,i} - \tau_{mb,j} \quad \text{(muzzle blast TDOA)} $$
 
 These are written out as **ground-truth labels** — the exact values the GCC-PHAT estimator will later be compared against during Zenodo validation.
 
-For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $r_{\perp,i}$ (the perpendicular distance), whereas the muzzle blast travels $\|\mathbf{x}_i - \mathbf{x}_s\|$ (the full slant range), and $r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\|$ by definition. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
+For any supersonic shot ($M>1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels only $ r_{\perp,i} $ (the perpendicular distance), whereas the muzzle blast travels $ \|\mathbf{x}_i - \mathbf{x}_s\| $ (the full slant range), and $ r_{\perp,i} < \|\mathbf{x}_i - \mathbf{x}_s\| $ by definition. The ordering $ \tau_{sw,i} < \tau_{mb,i} $ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
 
 #### Output of Stage I
 
