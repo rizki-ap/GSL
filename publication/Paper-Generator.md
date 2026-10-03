@@ -191,11 +191,11 @@ $$ R_{sw,i} =\left\|\mathbf{x}_i-\mathbf{x}_{sw,i}\right\| =\frac{M r_{\perp,i}}
 
 Taking the instant of projectile discharge as \(t_0=0\), the shockwave arrival time comprises the projectile travel time to the emission point and the subsequent acoustic propagation time:
 
-$$ tau_{sw,i} =\frac{s_i}{v_b}+\frac{R_{sw,i}}{c}. $$
+$$ \tau_{sw,i} =\frac{s_i}{v_b}+\frac{R_{sw,i}}{c}. $$
 
 Substituting the expressions above yields
 
-$$ \boxed{ tau_{sw,i}= \frac{a_i+r_{\perp,i}\sqrt{M^2-1}}{Mc}. } $$
+$$ \boxed{ \tau_{sw,i}= \frac{a_i+r_{\perp,i}\sqrt{M^2-1}}{Mc}. } $$
 
 This expression gives the absolute shockwave arrival time for a straight, constant-velocity projectile trajectory in a stationary, homogeneous medium. The perpendicular distance \(r_{\perp,i}\) is also used to determine the N-wave amplitude and duration. The arrival-time calculation and waveform-amplitude model therefore share the same sensor-to-trajectory geometry, while representing distinct physical quantities.
 
@@ -375,7 +375,7 @@ Validation is conducted across three complementary metric families, each targeti
   - $\text{SNR}_{\text{synth}} = 10 \log_{10} \frac{\sum x[n]^2}{\sum (x[n] - \hat{x}[n])^2}$ dB (absolute amplitude fidelity)
   - $\epsilon_{\Delta p} = \frac{|\Delta p_{\text{synth}} - \Delta p_{\text{meas}}|}{\Delta p_{\text{meas}}} \times 100$ (physical scaling law evaluation)
 - **Spectral coherence** measures frequency-by-frequency linear agreement between synthesised and measured signals, averaged across trials: $\bar{C}(\omega) = \frac{1}{K} \sum_{k=1}^K \frac{|S_{xy}^{(k)}(\omega)|^2}{S_{xx}^{(k)}(\omega) S_{yy}^{(k)}(\omega)} \in [0, 1]$.
-- **TDOA accuracy metrics** evaluate timing fidelity against ground-truth labels for all sensor pairs $(i,j)$ across all trials: $\text{MAE} = \overline{|\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}}|}$, $\text{RMSE} = \overline{(\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}})^2}$, $\text{Bias} = \overline{\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}}}$.
+- **TDOA accuracy metrics** evaluate timing fidelity against ground-truth labels for all sensor pairs $(i,j)$ across all trials: $\text{MAE} = \overline{|\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}}|}$, $\text{RMSE} = \sqrt{\overline{(\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}})^2}}$, $\text{Bias} = \overline{\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}}}$.
 
 ### 4.4 Waveform Morphology Results
 
