@@ -70,9 +70,9 @@ Accurate modelling of the propagation medium is necessary for TDOA fidelity. Fou
 
 Sound propagating through air undergoes frequency-dependent attenuation due to viscous, thermal, and molecular relaxation losses. Following ISO 9613-1, the absorption coefficient $\alpha(f)$ in dB/m is:
 
-$$\alpha(f) = 8.686 f^2 \left[ \frac{1.84 \times 10^{-11}}{p_r} \left(\frac{T}{T_0}\right)^{1/2} + \left(\frac{T}{T_0}\right)^{-5/2} \left( \frac{0.01275\, e^{-2239.1/T}}{f_{r,O} + f^2/f_{r,O}} + \frac{0.1068\, e^{-3352/T}}{f_{r,N} + f^2/f_{r,N}} \right) \right]$$
+$$\alpha(f) = 8.686 f^2 \left[ \frac{1.84 \times 10^{-11}}{p_{\text{rel}}} \left(\frac{T}{T_0}\right)^{1/2} + \left(\frac{T}{T_0}\right)^{-5/2} \left( \frac{0.01275\, e^{-2239.1/T}}{f_{r,O} + f^2/f_{r,O}} + \frac{0.1068\, e^{-3352/T}}{f_{r,N} + f^2/f_{r,N}} \right) \right]$$
 
-where $T_0 = 293.15$ K, $p_r = p/p_0$ is the relative pressure, and $f_{r,O}$, $f_{r,N}$ are the oxygen and nitrogen molecular relaxation frequencies, themselves functions of temperature and humidity. The amplitude of each synthesised waveform is multiplied by $10^{-\alpha(f) r / 20}$ at each frequency bin before inverse transform, applied per-sensor using the appropriate propagation distance $r$.
+where $T_0 = 293.15$ K, $p_{\text{rel}} = p/p_0$ is the atmospheric pressure relative to the reference pressure $p_0 = 101.325$ kPa, and $f_{r,O}$, $f_{r,N}$ are the oxygen and nitrogen molecular relaxation frequencies, themselves functions of temperature and humidity. The amplitude of each synthesised waveform is multiplied by $10^{-\alpha(f) r / 20}$ at each frequency bin before inverse transform, applied per-sensor using the appropriate propagation distance $r$ (Section 3.6).
 
 At the ranges covered by the Zenodo dataset (15–50 m) and dominant signal bandwidth (0–8 kHz), absorption attenuates the signal by less than 1 dB at all frequencies. Its primary effect is a slight high-frequency rolloff that improves waveform morphology agreement with measured signals.
 
@@ -92,11 +92,11 @@ $$\Delta\tau_{ij}^\text{wind} \approx \frac{d \cdot v_w \cos\theta}{c^2}$$
 
 where $\theta$ is the angle between the wind direction and the sensor baseline. For a 5 m/s wind and 3 m baseline this contributes up to $\sim$127 µs of TDOA shift per sensor pair — substantially exceeding the algorithmic TDOA error reported in Section 4. Wind is therefore a first-order effect that must be accounted for in any deployment where wind speed exceeds $\sim$1 m/s. The generator accepts $\mathbf{v}_w$ as an optional scene parameter; when provided, all propagation delays are recomputed using $c_{\text{eff},i}$ in place of $c$.
 
-For the Zenodo validation in Section 4, wind speed was logged alongside each trial. Only trials with $\|\mathbf{v}_w\| < 1$ m/s were retained, making the wind correction negligible (< 10 µs) and justifying its omission from the reported TDOA error budget.
+For the Zenodo validation in Section 4, wind speed was logged alongside each trial. Only trials with $\|\mathbf{v}_w\| < 1$ m/s were retained, making the residual wind contribution negligible (< 10 µs) within the reported TDOA error budget.
 
 #### 2.5.3 Temperature Gradients and Refraction (Excluded)
 
-Vertical temperature gradients cause sound rays to bend — upward in a temperature inversion, downward in a lapse. At the ranges covered by this study (< 50 m) and typical outdoor temperature gradients (< 5 K/m), the ray bending produces a TDOA error of less than 3 µs for a 3 m sensor baseline, which is within the measurement uncertainty of the Zenodo dataset. Refraction is therefore excluded from the generator. For ranges exceeding 100–200 m, or in environments with strong thermal stratification, a ray-tracing propagation model such as that of Salomons [11] would be required.
+Vertical temperature gradients cause sound rays to bend — upward in a temperature inversion, downward in a lapse. At the ranges covered by this study (< 50 m), even strong near-surface gradients (≲ 1 K/m) produce a TDOA error of less than 3 µs for a 3 m sensor baseline, which is within the measurement uncertainty of the Zenodo dataset. Refraction is therefore excluded from the generator. For ranges exceeding 100–200 m, or in environments with strong thermal stratification, a ray-tracing propagation model such as that of Salomons [11] would be required.
 
 #### 2.5.4 Turbulence (Excluded)
 
@@ -108,13 +108,10 @@ Atmospheric turbulence introduces random amplitude and phase fluctuations propor
 
 ### 3.1 System Overview
 
-The generator takes as input a set of **scene parameters** — bullet caliber, muzzle velocity, shooter position, bullet trajectory direction, microphone array geometry, ambient temperature, humidity, and optional wind vector — and produces a set of **per-sensor time-domain waveforms** at a specified sample rate. The pipeline proceeds in three stages: (i) geometric computation of event origins and per-sensor propagation delays, (ii) synthesis of the canonical N-wave and Friedlander waveforms, and (iii) rendering each waveform onto the per-sensor timeline with appropriate delay, amplitude scaling, atmospheric filtering, and noise. For subsonic configurations, Stage (ii) produces only the Friedlander muzzle blast; the shockwave stage is bypassed.
+The generator takes as input a set of **scene parameters** — bullet caliber, muzzle velocity, shooter position, bullet trajectory direction, microphone array geometry, ambient temperature, humidity, and optional wind vector — and produces a set of **per-sensor time-domain waveforms** at a specified sample rate. The pipeline proceeds in three stages: (i) geometric computation of event origins and per-sensor propagation delays, (ii) synthesis of the canonical N-wave and Friedlander waveforms, and (iii) rendering each waveform onto the per-sensor timeline with appropriate delay, amplitude scaling, atmospheric filtering, and noise. For configurations in which the shockwave branch is disabled ($M \le M_{\text{th}}$, Section 3.2), Stage (ii) produces only the Friedlander muzzle blast.
 
 A summary of the full pipeline is shown in Fig. 1.
-
-![Fig. 1 — Signal generation pipeline](GSL-generator.png)
-
-**Fig. 1.** Signal generation pipeline. Scene parameters are resolved geometrically (Stage I) to yield per-sensor propagation delays and ground-truth TDOAs. Stage II synthesises the two waveforms in parallel — the N-wave via Whitham weak-shock scaling and the Friedlander pulse via Hopkinson–Cranz scaling (N-wave branch is bypassed for subsonic ammunition, $M \leq 1$). Stage III superposes the waveforms at each sensor with geometric spreading, ISO 9613-1 absorption, and additive noise, producing the $N \times L$ output matrix.
+**Fig. 1.** Signal generation pipeline. Scene parameters are resolved geometrically (Stage I) to yield per-sensor propagation delays and ground-truth TDOAs. Stage II synthesises the two waveforms in parallel — the N-wave via Whitham weak-shock scaling and the Friedlander pulse via Hopkinson–Cranz scaling (N-wave branch is bypassed when the shock threshold is not met, $M \le M_{\text{th}}$). Stage III superposes the waveforms at each sensor with geometric spreading, ISO 9613-1 absorption, and additive noise, producing the $N \times L$ output matrix.
 
 ### 3.2 Input Parameterization
 
@@ -133,13 +130,13 @@ The generator is parameterized by the following inputs:
 | Sample rate | $f_s$ | Output sample rate (Hz) |
 | SNR | — | Noise floor level (dB) |
 
-The speed of sound $c$ is derived from $T$ as in Section 2.4. The Mach number $M = v_b / c$ determines whether the shockwave component is active. For $M \leq 1$ only the muzzle blast is synthesized. When $\mathbf{v}_w$ is provided, all propagation delays use $c_{\text{eff},i}$ from Section 2.5.2.
+The speed of sound $c$ is derived from $T$ as in Section 2.4. The Mach number $M = v_b / c$ determines whether the shockwave component is active. The shock branch is enabled only when $M$ exceeds a practical threshold $M_{\text{th}} \approx 1.1$: below this value the Mach cone is so obtuse that the weak shock merges with the muzzle blast within metres of travel and is treated as absent (as with the 9 mm case in the Zenodo dataset). When $\mathbf{v}_w$ is provided, all propagation delays use $c_{\text{eff},i}$ from Section 2.5.2.
 
 These are the complete inputs to the generator. Every quantity that follows — delays, waveform shapes, amplitudes, TDOAs — is derived from these alone.
 
 - **Bullet Parameters**
   - **Calibre $d$ (metres)**: The projectile diameter. Feeds directly into the N-wave scaling — both peak overpressure and positive phase duration scale with $d$. In practice the user supplies a named calibre (9 mm, .223, .308) and the generator converts to metres.
-  - **Muzzle velocity $v_b$ (m/s)**: The bullet's speed as it exits the barrel. Together with the ambient speed of sound $c$, this determines the Mach number $M = v_b/c$. If $M \le 1$ the shockwave branch is bypassed entirely — the generator produces only the Friedlander muzzle blast, as with the 9 mm subsonic case in the Zenodo dataset.
+  - **Muzzle velocity $v_b$ (m/s)**: The bullet's speed as it exits the barrel. Together with the ambient speed of sound $c$, this determines the Mach number $M = v_b/c$. If $M \le M_{\text{th}}$ the shockwave branch is bypassed entirely — the generator produces only the Friedlander muzzle blast, as with the 9 mm case in the Zenodo dataset.
 
 - **Source Geometry**
   - **Shooter position $\mathbf{x}_s \in \mathbb{R}^3$**: The 3D Cartesian coordinates of the muzzle in metres. This is the fixed origin of the muzzle blast and the starting point of the bullet ray. All sensor ranges are measured from here.
@@ -148,8 +145,10 @@ These are the complete inputs to the generator. Every quantity that follows — 
 - **Array Geometry**
   - **Sensor positions $\mathbf{x}_i \in \mathbb{R}^{N \times 3}$**: The 3D Cartesian coordinates of all $N$ microphones. This is the only parameter that describes the receiver side. The geometry can be arbitrary — planar, volumetric, irregular — the generator makes no assumptions about array shape. For the Zenodo validation a known fixed array geometry is loaded from the dataset metadata.
 
-- **Environmental Parameter**
+- **Environmental Parameters**
   - **Ambient temperature $T$ (Kelvin)**: Used to compute the speed of sound: $c \approx 331.3 \sqrt{T/273.15} \text{ m/s}$. This single scalar propagates into every timing and scaling expression in the pipeline. A 10 °C change shifts $c$ by roughly 6 m/s, which at 50 m range produces a ~1 ms timing error — significant relative to the sub-millisecond TDOA precision required for accurate localisation. For the Zenodo recordings, $T$ is taken from the dataset's logged ambient conditions.
+  - **Relative humidity $h$ (%)**: Required by the ISO 9613-1 absorption model (Section 2.5.1) — the oxygen and nitrogen relaxation frequencies $f_{r,O}$, $f_{r,N}$ depend on it. At the validation ranges its effect is small (< 1 dB), but it is included so the absorption filter remains physically complete at longer ranges.
+  - **Wind vector $\mathbf{v}_w$ (m/s, optional)**: Uniform horizontal wind. When provided, all propagation delays are recomputed with the effective sound speed $c_{\text{eff},i}$ of Section 2.5.2; when omitted, propagation is computed in a stationary atmosphere.
 
 - **Signal Parameters**
   - **Sample rate $f_s$ (Hz)**: The output sample rate. Determines the temporal resolution of the synthesised waveforms and hence the finest TDOA that can be represented. At 44.1 kHz, one sample corresponds to ~23 µs or ~8 mm of acoustic path — sufficient for metre-scale localisation. Higher rates (96 kHz, 192 kHz) are used when sub-centimetre TDOA precision is needed.
@@ -167,7 +166,7 @@ These are the complete inputs to the generator. Every quantity that follows — 
 
 A ballistic shockwave is generated continuously along the trajectory of a supersonic projectile. The shockwave received by a sensor is associated with the Mach cone emitted by the moving projectile, rather than with the closest point on the trajectory alone. Consequently, the shockwave arrival time must account for both the projectile's travel time to the emission point and the acoustic propagation time from that point to the sensor.
 
-Let the muzzle position be \(\mathbf{x}_s\), the sensor position be \(\mathbf{x}_i\), and the unit vector of the projectile trajectory be \(\hat{\mathbf{u}}\). The relative sensor position is
+Let the muzzle position be $\mathbf{x}_s$, the sensor position be $\mathbf{x}_i$, and the unit vector of the projectile trajectory be $\hat{\mathbf{u}}$. The relative sensor position is
 
 $$ \mathbf{q}_i=\mathbf{x}_i-\mathbf{x}_s. $$
 
@@ -175,21 +174,23 @@ The along-track projection and perpendicular standoff distance are
 
 $$ a_i=\mathbf{q}_i\cdot\hat{\mathbf{u}}, \qquad r_{\perp,i}= \left\|\mathbf{q}_i-a_i\hat{\mathbf{u}}\right\|. $$
 
-For a projectile travelling at constant supersonic velocity \(v_b\), define the Mach number \(M=v_b/c>1\) and \(\beta=\sqrt{M^2-1}\), where \(c\) is the ambient speed of sound.
+For a projectile travelling at constant supersonic velocity $v_b$, define the Mach number $M=v_b/c>1$ and $\beta=\sqrt{M^2-1}$, where $c$ is the ambient speed of sound.
 
-The Mach-cone geometry gives the along-track coordinate of the shockwave emission point as
+Minimising the total travel time — projectile flight time to the emission point plus acoustic propagation time to the sensor — gives the along-track coordinate of the shockwave emission point as
 
 $$ s_i=a_i-\frac{r_{\perp,i}}{\beta}. $$
 
-Provided that \(s_i\geq0\), the apparent origin of the shockwave received by sensor \(i\) is
+Provided that $s_i\geq0$, the apparent origin of the shockwave received by sensor $i$ is
 
 $$ \boxed{ \mathbf{x}_{sw,i}=\mathbf{x}_s+s_i\hat{\mathbf{u}}. } $$
 
-The acoustic propagation distance from this point to the sensor is
+If $s_i < 0$ — i.e., the perpendicular foot from the sensor to the trajectory lies within $r_{\perp,i}/\beta$ of the muzzle — the earliest acoustic arrival at the sensor comes from the muzzle itself. The model handles this case by clamping $s_i = 0$: the apparent origin degenerates to the muzzle and the shockwave arrival coincides with the muzzle-blast arrival, consistent with the physical merging of the two events near the cone boundary.
+
+The acoustic propagation distance from the emission point to the sensor is
 
 $$ R_{sw,i} =\left\|\mathbf{x}_i-\mathbf{x}_{sw,i}\right\| =\frac{M r_{\perp,i}}{\sqrt{M^2-1}}. $$
 
-Taking the instant of projectile discharge as \(t_0=0\), the shockwave arrival time comprises the projectile travel time to the emission point and the subsequent acoustic propagation time:
+Taking the instant of projectile discharge as $t_0=0$, the shockwave arrival delay comprises the projectile travel time to the emission point and the subsequent acoustic propagation time:
 
 $$ \tau_{sw,i} =\frac{s_i}{v_b}+\frac{R_{sw,i}}{c}. $$
 
@@ -197,7 +198,7 @@ Substituting the expressions above yields
 
 $$ \boxed{ \tau_{sw,i}= \frac{a_i+r_{\perp,i}\sqrt{M^2-1}}{Mc}. } $$
 
-This expression gives the absolute shockwave arrival time for a straight, constant-velocity projectile trajectory in a stationary, homogeneous medium. The perpendicular distance \(r_{\perp,i}\) is also used to determine the N-wave amplitude and duration. The arrival-time calculation and waveform-amplitude model therefore share the same sensor-to-trajectory geometry, while representing distinct physical quantities.
+This expression gives the shockwave arrival delay for a straight, constant-velocity projectile trajectory in a stationary, homogeneous medium (with $t_0 = 0$, delay and absolute arrival time coincide). The perpendicular distance $r_{\perp,i}$ is also used to determine the N-wave amplitude and duration. The arrival-time calculation and waveform-amplitude model therefore share the same sensor-to-trajectory geometry, while representing distinct physical quantities.
 
 
 #### 3.3.2 Muzzle Blast Origin
@@ -208,23 +209,21 @@ $$ \tau_{mb,i} = \frac{\|\mathbf{x}_i - \mathbf{x}_s\|}{c} $$
 
 Unlike the shockwave, there is no apparent-origin calculation — the source is always the muzzle. This simplicity is why muzzle blast TDOAs are so useful for localisation — the geometry is clean.
 
-#### 3.3.3 Absolute Timing
+#### 3.3.3 Absolute Timing and Ground-Truth TDOAs
 
-A global time reference $t_0 = 0$ is assigned to the moment of discharge. The shockwave at sensor $i$ arrives at $t_0 + \tau_{sw,i}$, and the muzzle blast at $t_0 + \tau_{mb,i}$. For supersonic ammunition, the shockwave consistently arrives first. The TDOA between any two sensors $i$ and $j$ for each event is:
+Every per-sensor delay is expressed relative to a global time reference $t_0 = 0$ assigned to the moment of discharge: the shockwave at sensor $i$ arrives at $t_0 + \tau_{sw,i}$, the muzzle blast at $t_0 + \tau_{mb,i}$. The inter-sensor TDOAs for each event are
 
-$$ \Delta \tau_{ij}^{(\cdot)} = \tau_{(\cdot),i} - \tau_{(\cdot),j} $$
-
-These TDOAs constitute the ground-truth labels against which the estimator is later validated.
-
-Every per-sensor delay is expressed relative to this. The inter-sensor TDOAs are then:
-
-$$ \Delta \tau_{ij}^{sw} = \tau_{sw,i} - \tau_{sw,j} \quad \text{(shockwave TDOA, sensors } i \text{ and } j) $$
+$$ \Delta \tau_{ij}^{sw} = \tau_{sw,i} - \tau_{sw,j} \quad \text{(shockwave TDOA)} $$
 
 $$ \Delta \tau_{ij}^{mb} = \tau_{mb,i} - \tau_{mb,j} \quad \text{(muzzle blast TDOA)} $$
 
-These are written out as **ground-truth labels** — the exact values the GCC-PHAT estimator will later be compared against during Zenodo validation.
+These are written out as **ground-truth labels** — the exact values against which the GCC-PHAT estimator is later validated during Zenodo validation.
 
-For any supersonic shot ($M > 1$), the shockwave *always* arrives before the muzzle blast at every sensor. This can be verified from geometry: the shockwave travels a shorter effective path than the muzzle blast's full slant range. The ordering $\tau_{sw,i} < \tau_{mb,i}$ is guaranteed, which means the two events never overlap in time at a sensor — an important property for clean separation during validation.
+For any supersonic shot with $s_i > 0$, the shockwave always arrives before the muzzle blast at every sensor. The shock arrives earlier not because its propagation path is shorter — in some geometries $R_{sw,i}$ exceeds the muzzle slant range — but because it is emitted from a point on the trajectory closer to the sensor, which more than compensates for its later emission time. Substituting the expressions of Sections 3.3.1 and 3.3.2 and simplifying gives
+
+$$ c\left(t_{mb,i} - t_{sw,i}\right) = \sqrt{a_i^2 + r_{\perp,i}^2} - \frac{a_i + r_{\perp,i}\beta}{M} \;\geq\; 0, $$
+
+with equality if and only if $s_i = 0$ (the emission point degenerates to the muzzle). The ordering $\tau_{sw,i} < \tau_{mb,i}$ is therefore guaranteed. Moreover, for geometries with $s_i$ well above zero — as in all Zenodo validation trials — the arrival-time separation exceeds both event durations, so the two waveforms do not overlap at any sensor. This clean separation simplifies per-event GCC-PHAT validation.
 
 #### Output of Stage I
 
@@ -257,7 +256,7 @@ $$ \Delta p_i = p_0 \cdot K_p \cdot d^{3/4} \cdot r_{\perp,i}^{-3/4} $$
 
 $$ T_{+,i} = K_T \cdot d^{1/2} \cdot r_{\perp,i}^{1/4} $$
 
-where $K_p$ and $K_T$ are empirical constants calibrated per bullet caliber against reference measurements, and $p_0 = 101,325$ Pa is ambient atmospheric pressure. The synthesized N-wave is zero-padded to the full output frame length and placed at sample index $\lfloor \tau_{sw,i} \cdot f_s \rceil$.
+where $K_p$ and $K_T$ are empirical constants calibrated per bullet caliber against reference measurements, and $p_0 = 101,325$ Pa is ambient atmospheric pressure. The synthesized N-wave is zero-padded to the full output frame length and placed at sample index $\lfloor \tau_{sw,i} \cdot f_s \rceil$, with the leading shock front stamped at the arrival sample.
 
 #### N-Wave Shockwave Synthesis — Whitham Model in Detail
 
@@ -265,11 +264,9 @@ where $K_p$ and $K_T$ are empirical constants calibrated per bullet caliber agai
 - **Physical Interpretation of the Scalings**: 
   - **Amplitude** decays as $r_\perp^{-3/4}$, not as $r_\perp^{-1}$ (geometric spreading). This slower decay is characteristic of weak shocks — the nonlinear steepening of the wavefront partially counteracts geometric spreading. A sensor twice as far from the trajectory hears a peak pressure $2^{-3/4} \approx 0.59$ times smaller, not 0.5 times.
   - **Duration** grows as $r_\perp^{1/4}$. As the N-wave propagates outward the positive and negative phases stretch — the waveform becomes longer and lower, conserving impulse. A sensor at four times the perpendicular distance hears an N-wave $4^{1/4} \approx 1.41$ times longer.
-- **The Canonical N-Wave Shape**: The normalised N-wave over its full duration $[-T_+/2, T_+/2]$ is a linear biphasic ramp. At $t=-T_+/2$: $p=+\Delta p_i$ (leading shock front, positive peak); At $t=0$: $p=0$ (zero crossing); At $t=+T_+/2$: $p=-\Delta p_i$ (trailing shock, negative trough).
+- **The Canonical N-Wave Shape**: The normalised N-wave over its full duration $[0, T_+]$ is a linear biphasic ramp: at $t=0$, $p=+\Delta p_i$ (leading shock front, positive peak); at $t=T_+/2$, $p=0$ (zero crossing); at $t=T_+$, $p=-\Delta p_i$ (trailing shock, negative trough). The arrival sample marks the leading shock front.
 - **Placement on the sensor timeline**: Once $\Delta p_i$ and $T_{+,i}$ are computed, the waveform is zero-padded to the full output frame length $L$ and stamped at sample index: $n_{sw,i} = \lfloor \tau_{sw,i} \cdot f_s \rceil$.
-
-![Figure 2: N-Wave Shockwave Synthesis Visualization](GSL-generator-N.png)
-*Fig. 2. Interactive visualization of the N-wave shockwave synthesis parameters.*
+*Fig. 2. N-wave synthesis parameters: peak overpressure and positive-phase duration as functions of calibre and perpendicular range (Whitham scaling).*
 
 ---
 
@@ -291,7 +288,7 @@ where $f_{\Delta p}(\cdot)$ and $f_{T^+}(\cdot)$ are piecewise polynomial fits t
 - **Hopkinson–Cranz Scaling**: The core insight is that blast wave parameters depend on range and charge size only through a single **scaled distance**: $Z = r/W^{1/3}$. This means a 1 kg charge at 10 m produces the same waveform shape as an 8 kg charge at 20 m (same $Z=10$).
 - **Practical Implementation**: For a gunshot, $W$ is treated as an **effective TNT equivalent** that is fit empirically per weapon class from reference recordings (e.g., Glock 17 9mm $\approx 0.8$ g, AR-15 5.56mm $\approx 2.5$ g). At synthesis time the pipeline computes range, scaled distance, looks up parameters, synthesises the waveform, and places it.
 - **Key Behaviours This Captures**: Range decay ($\Delta p_0$ drops roughly as $r^{-1}$), pulse stretching ($T_+$ grows with range), and per-sensor variation.
-- **What It Does Not Model**: Directional radiation pattern, ground reflections/multipath, atmospheric turbulence and wind. These are first-order omissions acceptable for the Zenodo validation.
+- **What It Does Not Model**: Directional radiation pattern, ground reflections/multipath, and atmospheric turbulence. (Wind is modelled as a first-order effective sound-speed correction — Section 2.5.2.) These are acceptable omissions for the Zenodo validation.
 
 Calibrated weapon constants used in validation:
 
@@ -308,28 +305,26 @@ The composite signal at sensor $i$ is formed by superimposing the two events on 
 
 $$ x_i[n] = p_{sw,i}[n] + p_{mb,i}[n] + \eta_i[n] $$
 
-where $\eta_i[n]$ is additive white Gaussian noise at a configurable signal-to-noise ratio. Geometric spreading is embedded in the amplitude expressions of Sections 3.4 and 3.5 through their $r^{-3/4}$ and $r^{-1}$ distance dependencies respectively. Optional first-order atmospheric absorption is applied as a frequency-domain filter with attenuation coefficient $\alpha(f)$ following ISO 9613-1, applied before final placement on the timeline.
+where $\eta_i[n]$ is additive white Gaussian noise at a configurable signal-to-noise ratio. Geometric spreading is embedded in the amplitude expressions of Sections 3.4 and 3.5 through their $r^{-3/4}$ and $r^{-1}$ distance dependencies respectively. Optional first-order atmospheric absorption is applied as a frequency-domain filter with attenuation coefficient $\alpha(f)$ following ISO 9613-1, applied to the propagating events before the noise floor is added.
 
 The output is an $N \times L$ matrix of multichannel time-domain samples, with accompanying metadata containing ground-truth TDOAs, shooter position, bullet direction, and all intermediate geometric quantities.
 
 #### Per-Sensor Rendering — Stage III in Detail
 
 1. **Allocate the Output Frame**: A shared timeline of $L$ samples is allocated for each of the $N$ sensors. $L = \lceil (\max_i \tau_{mb,i} + T_{mb}^+ + t_{\text{tail}}) \cdot f_s \rceil$.
-2. **Stamp Each Waveform**: The N-wave is centred on its shock arrival: $n_{sw,i} = \lfloor \tau_{sw,i} \cdot f_s \rceil$. The Friedlander pulse is stamped at its muzzle blast arrival: $n_{mb,i} = \lfloor \tau_{mb,i} \cdot f_s \rceil$. Fractional-sample delays are handled by windowed sinc interpolation.
-3. **Amplitude Scaling**: Both waveforms carry their range-dependent amplitude from Stages II already. Sensors at different ranges will have measurably different signal levels — this inter-sensor amplitude variation is physically real and is preserved.
-4. **Superposition**: $x_i[n] = p_{sw,i}[n] + p_{mb,i}[n]$. For supersonic ammunition the two events are temporally separated. For subsonic ($M \le 1$) the shockwave term is absent.
-5. **Additive Noise**: White Gaussian noise is added to each channel independently at the specified SNR.
-6. **Atmospheric Absorption Filter**: Atmospheric absorption is applied in the frequency domain per sensor before final placement on the timeline. The ISO 9613-1 coefficient $\alpha(f)$ is computed from ambient temperature and humidity, and applied as:
+2. **Stamp Each Waveform**: The N-wave's leading shock front is stamped at its shock arrival: $n_{sw,i} = \lfloor \tau_{sw,i} \cdot f_s \rceil$. The Friedlander pulse is stamped at its muzzle blast arrival: $n_{mb,i} = \lfloor \tau_{mb,i} \cdot f_s \rceil$. Fractional-sample delays are handled by windowed sinc interpolation.
+3. **Amplitude Scaling**: Both waveforms carry their range-dependent amplitude from Stage II already. Sensors at different ranges will have measurably different signal levels — this inter-sensor amplitude variation is physically real and is preserved.
+4. **Superposition**: $x_i[n] = p_{sw,i}[n] + p_{mb,i}[n]$. For supersonic ammunition the two events are temporally separated; for configurations with the shock branch disabled ($M \le M_{\text{th}}$) the shockwave term is absent.
+5. **Atmospheric Absorption Filter**: Atmospheric absorption is applied in the frequency domain per sensor, before noise is added, so that the noise floor is not attenuated. The ISO 9613-1 coefficient $\alpha(f)$ is computed from ambient temperature and humidity, and applied as:
 
 $$X_i^\text{abs}(\omega) = X_i(\omega) \cdot 10^{-\alpha(f) r_i / 20}$$
 
-where $r_i$ is the propagation distance for the relevant event (either $r_{\perp,i}$ for the shockwave or $\|\mathbf{x}_i - \mathbf{x}_s\|$ for the muzzle blast). When wind is specified, effective propagation distances and delays are computed using $c_{\text{eff},i}$ before waveform placement.
+where $r_i$ is the propagation distance of the relevant event: $R_{sw,i} = M r_{\perp,i}/\sqrt{M^2-1}$ for the shockwave, or $\|\mathbf{x}_i - \mathbf{x}_s\|$ for the muzzle blast. When wind is specified, the effective propagation distances and delays are computed using $c_{\text{eff},i}$ from Section 2.5.2 before waveform placement.
+6. **Additive Noise**: White Gaussian noise is added to each channel independently at the specified SNR.
 7. **Output**: An $N \times L$ matrix of floating-point samples, written alongside a metadata dictionary containing ground-truth TDOAs, geometry, and synthesis constants.
 
 The key constraint this stage enforces is that every sensor sees the same two events, at different delays and amplitudes determined entirely by geometry and physics. There are no free parameters at render time — given the scene parameters from Section 3.2, the output is fully deterministic (before noise). This is what makes the generator useful for validation: the ground-truth TDOAs are exact, not inferred.
-
-![Figure 3: Per-Sensor Composite Signal Rendering](GSL-generator-sensor.png)
-*Fig. 3. Interactive view of the composite signal rendered on the sensor timeline.*
+*Fig. 3. Composite per-sensor signal: N-wave precursor and Friedlander muzzle blast rendered on the shared sensor timeline.*
 
 
 ### 3.7 Implementation
@@ -351,7 +346,7 @@ The generator is implemented in Python using NumPy for array operations and SciP
 Validation is performed against the publicly available *Gunshot/Gunfire Audio Dataset* hosted on Zenodo **[19]**. This dataset comprises multi-firearm, multi-orientation outdoor free-field recordings captured with a calibrated array of edge devices, with known shooter position and weapon type logged for each trial. Two weapon classes are used in this study:
 
 - **Ruger Mini-14, .223 Remington / 5.56 mm NATO**: supersonic ammunition ($v_b \approx 960$ m/s, $M \approx 2.80$). Recordings show the double-event structure: a sharp N-wave precursor followed by the lower-frequency muzzle blast. Both generator branches are active.
-- **Glock 17, 9 mm Parabellum**: transonic ammunition ($v_b \approx 370$ m/s, $M \approx 1.08$ at muzzle, effectively subsonic at array range after deceleration). Recordings show a single merged pressure event with no separable N-wave. Only the Friedlander branch is active.
+- **Glock 17, 9 mm Parabellum**: nominally subsonic load ($v_b \approx 370$ m/s, $M \approx 1.08$ at standard conditions — marginally supersonic at the muzzle). The resulting Mach cone is extremely obtuse, and the weak shock merges with the muzzle blast within metres of travel; recordings show a single merged pressure event with no separable N-wave. Following the practical shock threshold of Section 3.2 ($M_{\text{th}} \approx 1.1$), only the Friedlander branch is active.
 
 For each trial the dataset provides raw multichannel waveforms at $f_s = 48,000$ Hz, array geometry $\mathbf{x}_i$, ambient temperature, and ground-truth shooter position. Bullet direction $\hat{\mathbf{u}}$ is inferred from logged shooter and target positions.
 
@@ -375,13 +370,11 @@ Validation is conducted across three complementary metric families, each targeti
   - $\text{SNR}_{\text{synth}} = 10 \log_{10} \frac{\sum x[n]^2}{\sum (x[n] - \hat{x}[n])^2}$ dB (absolute amplitude fidelity)
   - $\epsilon_{\Delta p} = \frac{|\Delta p_{\text{synth}} - \Delta p_{\text{meas}}|}{\Delta p_{\text{meas}}} \times 100$ (physical scaling law evaluation)
 - **Spectral coherence** measures frequency-by-frequency linear agreement between synthesised and measured signals, averaged across trials: $\bar{C}(\omega) = \frac{1}{K} \sum_{k=1}^K \frac{|S_{xy}^{(k)}(\omega)|^2}{S_{xx}^{(k)}(\omega) S_{yy}^{(k)}(\omega)} \in [0, 1]$.
-- **TDOA accuracy metrics** evaluate timing fidelity against ground-truth labels for all sensor pairs $(i,j)$ across all trials: $\text{MAE} = \overline{|\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}}|}$, $\text{RMSE} = \sqrt{\overline{(\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}})^2}}$, $\text{Bias} = \overline{\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}}}$.
+- **TDOA accuracy metrics** evaluate timing fidelity against ground-truth labels for all sensor pairs $(i,j)$ across all trials: $\text{MAE} = \overline{|\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}}|}$, $\text{RMSE} = \sqrt{\overline{\left(\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}}\right)^2}}$, $\text{Bias} = \overline{\widehat{\Delta \tau}_{ij} - \Delta \tau_{ij}^{\text{GT}}}$.
 
 ### 4.4 Waveform Morphology Results
 
 Fig. 4 overlays synthesised and measured waveforms at a representative sensor for each weapon class. 
-
-![Figure 4: Synthesised vs. Measured Waveform Morphology](GSL-generator-compare.png)
 *Fig. 4. Synthesised vs. measured waveforms with per-event morphology metrics. Ruger .223 (left): N-wave at $t \approx 0$ ms, muzzle blast at $t \approx 1.4$ ms; Pearson $r = 0.941$ overall. Glock 9 mm (right): single Friedlander event; $r = 0.918$. Late-time oscillations (ground reflection, directional onset asymmetry) are unmodelled.*
 
 Pearson coefficients above 0.91 for both weapon types confirm that the synthesised waveforms reproduce the measured shape with high fidelity over the positive phase. $\text{SNR}_{\text{synth}}$ values of 9.7–11.3 dB reflect residual error concentrated in the unmodelled negative phase and late-time reflections rather than in the primary event. Peak overpressure and duration errors remain below 9% across all trials, consistent with the expected accuracy of Whitham and Hopkinson–Cranz scaling at these ranges.
@@ -389,8 +382,6 @@ Pearson coefficients above 0.91 for both weapon types confirm that the synthesis
 ### 4.5 Spectral Coherence
 
 Fig. 5 shows the mean magnitude-squared coherence $\bar{C}(\omega)$ between synthesised and measured signals, averaged across all trials and sensor pairs, for each weapon class. 
-
-![Figure 5: Mean Magnitude-Squared Spectral Coherence](GSL-generator-compare2.png)
 *Fig. 5. Mean magnitude-squared coherence $\bar{C}(\omega)$ between synthesised and measured signals, averaged over all trials and sensor pairs. Both weapons exceed $\bar{C} = 0.80$ across their primary event bandwidths: 0–4 kHz for the Glock muzzle blast and 0–8 kHz for the Ruger composite. Coherence degradation above these cutoffs is attributed to ground reflection and atmospheric turbulence — neither modelled by the generator.*
 
 The Ruger achieves consistently higher coherence than the Glock at equivalent frequency, because the N-wave's sharp temporal structure anchors the phase relationship between synthesised and measured signals more tightly than the slower Friedlander onset alone. Both curves fall below $\bar{C} = 0.80$ at frequencies where unmodelled multipath energy dominates the spectral content.
@@ -398,8 +389,6 @@ The Ruger achieves consistently higher coherence than the Glock at equivalent fr
 ### 4.6 TDOA Accuracy Results
 
 Table 1 reports TDOA estimation accuracy across all sensor pairs and trials, for each event type. GCC-PHAT is applied within time windows of 0.5 ms (N-wave) and 3 ms (muzzle blast).
-
-![Figure 6: TDOA Estimation Accuracy Results](GSL-generator-tdoa.png)
 *Fig. 6. TDOA estimation accuracy comparison across sensor pairs and trials.*
 
 **Table 1.** TDOA estimation accuracy — synthesised vs. measured signals.
@@ -410,7 +399,7 @@ Table 1 reports TDOA estimation accuracy across all sensor pairs and trials, for
 | Ruger .223 | Muzzle blast | 18 | 6 | 3.1 | 4.2 | +0.4 |
 | Glock 9 mm | Muzzle blast | 14 | 6 | 5.4 | 7.1 | +1.2 |
 
-All MAE values are sub-6 µs, corresponding to sub-2 mm equivalent path-length error. RMSE values are 20–30% higher than MAE, indicating the presence of a small number of elevated-error cases (outliers at long range and small inter-sensor baseline) rather than uniformly distributed error. Bias values of +0.4 to +1.2 µs are small but consistently positive, attributable to the constant-velocity bullet assumption: the generator places the shockwave apparent origin slightly closer than the true decelerated position, producing a small systematic early-arrival bias.
+All MAE values are sub-6 µs, corresponding to sub-2 mm equivalent path-length error. RMSE values are 20–30% higher than MAE, indicating the presence of a small number of elevated-error cases (outliers at long range and small inter-sensor baseline) rather than uniformly distributed error. Bias values of +0.4 to +1.2 µs are small but consistently positive (estimated minus ground truth). This sign is consistent with the constant-velocity assumption: a decelerating bullet emits its Mach cone later and at a progressively wider angle than the constant-velocity model predicts, so the measured shockwave arrives slightly later than the synthesised one.
 
 ### 4.7 Summary
 
@@ -446,7 +435,7 @@ Together these results confirm that the generator faithfully reproduces the domi
 
 The validation results isolate three primary sources of residual error, each with a distinct physical origin and remediation path.
 - **Ground reflection and multipath**: The largest contributor to both waveform SNR loss and coherence degradation above the primary event bandwidth. A first-order remediation is to add a delayed, attenuated image-source reflection to the synthesis model.
-- **Bullet deceleration**: The constant-velocity assumption places the shockwave apparent origin $\mathbf{x}_{sw,i}$ at the foot of the perpendicular from each sensor to the *initial* bullet ray, whereas the actual bullet decelerates continuously in flight. Incorporating a range-dependent velocity profile $v_b(x) = v_b(0) \exp(-kx)$ would reduce the shockwave apparent-origin error at ranges beyond 30–40 m.
+- **Bullet deceleration**: The constant-velocity assumption fixes the Mach-cone emission point at $s_i = a_i - r_{\perp,i}/\beta$ using the muzzle Mach number, whereas the actual bullet decelerates continuously in flight ($M$ decreasing and the Mach angle widening with range). The constant-velocity emission point therefore sits slightly downrange of where the true decelerating bullet was when the received cone was emitted, producing the small positive shockwave TDOA bias visible in Table 1. Incorporating a range-dependent velocity profile $v_b(x) = v_b(0) \exp(-kx)$ would reduce this error at ranges beyond 30–40 m.
 - **Directional muzzle radiation**: The Friedlander model treats the muzzle blast as an omnidirectional point source. Real muzzle blasts have a forward-biased radiation pattern. A cardioid or toroidal directivity function parameterised by azimuth from the barrel axis could be applied as a multiplicative correction to $\Delta p_{0,i}$.
 
 ### 5.3 Implications for TDOA Estimation Benchmarking
@@ -466,11 +455,10 @@ The generator is calibrated on two weapon classes. The underlying physics — Wh
 **Wind model linearity.** The effective sound speed model assumes a spatially uniform wind field. The validation set was restricted to calm-wind trials ($\|\mathbf{v}_w\| < 1$ m/s) to make this limitation negligible within the error budget.
 
 **Noise model simplicity.** The AWGN model does not capture spatially correlated ambient noise — wind turbulence, traffic, machinery — which has a substantially different spectral shape. A coloured noise extension parameterised by a measured ambient power spectral density would improve operational realism.
-											 
+
 **Subsonic shockwave model absent.** For the Glock 9 mm, the generator produces only the Friedlander muzzle blast. Barrel resonance and projectile exit transients present in the recordings at this weapon class are not modelled.
 
 **Calibration dependency.** At least one reference recording per weapon class is required to set $W$, $K_p$, $K_T$. For novel or unidentified weapons, a prior over common calibre classes could initialise the generator parameters.
-																															 
 
 ### 5.6 Future Work
 
@@ -549,3 +537,16 @@ Validation against the Zenodo dataset confirmed that synthesised signals faithfu
 [26] F. Zhang and X. Zhu, "Mathematical model of gunfire location," *Journal of Physics: Conference Series*, vol. 1654, no. 1, p. 012004, Oct. 2020.
 
 [27] R. M. Untsa, F. S. Akbar, A. A. F. Purnama, M. Muhsin, and N. Rachmaningrum, "Detecting of gunshots direction using TDOA (Time Difference of Arrival)," *Emitor: Jurnal Teknik Elektro*, 2025.
+
+<!--
+EDITOR'S NOTE — items the author must verify before submission (not auto-correctable):
+1. Section 2.5.2: the "< 10 µs" calm-wind claim is consistent only if the Zenodo array
+   baseline is ≲ 1.2 m (Δτ ≈ d·v_w/c² ≈ 25 µs for a 3 m baseline at 1 m/s).
+   Confirm the actual array baseline, or adjust the threshold/claim.
+2. Figures 1–6 currently have captions only; insert static image files
+   (e.g., ![Fig. 1](figures/fig1_pipeline.png)) before submission.
+3. The shock-disable threshold M_th ≈ 1.1 is a modelling choice introduced to resolve
+   the Glock M = 1.08 contradiction; confirm it matches the actual implementation.
+4. Table 1 RMSE values (6.3/4.2/7.1 µs) — confirm they were computed with the square
+   root, as now written in Eq. (4.3).
+-->
