@@ -76,6 +76,9 @@ BULLET_LIBRARY_CLAUDE = {
     # 9 mm: NOT calibrated. Blast constants must be supplied (None = missing).
     '9mm_Parabellum': dict(d=9.02e-3, L=0.0155, v0=370.0, dP0_sw=None, b0_sw=None,
                            P_REF_MB=None, R_REF_MB=None, T_POS_REF=None),
+    # Glock 17 specific entry (9mm Parabellum, 124 gr FMJ)
+    'Glock_17_9mm': dict(d=9.02e-3, L=0.0155, v0=375.0, dP0_sw=None, b0_sw=None, 
+                         P_REF_MB=None, R_REF_MB=None, T_POS_REF=None),
 }
 
 
