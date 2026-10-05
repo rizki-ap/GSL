@@ -1,367 +1,479 @@
 """
-gs_gen_physic.py
-====================
-Shared physics + config-loading library for the two-stage gunshot signal
-pipeline:
+gs_gen_physic_claude.py
+=======================
+GPT-corrected physics library for the gunshot signal generator (a superset of
+gs_gen_physic.py -- the original file is NOT modified and must sit in the
+same folder; unchanged helpers are re-exported from it).
 
-  gs_gen_clean_signal.py   ->  <basename>_clean.wav + <basename>_clean.json
-  gs_gen_add_noise.py                ->  <basename>.wav       + <basename>.json
+What this adds relative to gs_gen_physic.py
+-------------------------------------------
+1. Shock geometry returned as a full record (emission point, ray length,
+   Mach-cone validity) instead of raising when a sensor is outside the cone.
+   Optional first-order wind on the acoustic leg.
+2. Speed of sound from temperature (331.3*sqrt(T/273.15)) instead of the
+   fixed 343 m/s (switchable back: propagation.speed_of_sound = fixed).
+3. N-wave amplitude / duration from the classical Whitham scaling
+   (dP ~ b^-3/4, T_N ~ b^1/4, both depending on bullet diameter d, bullet
+   length L and Mach number M) with calibration scale factors. The original
+   reference-point model is kept as model = legacy.
+4. Muzzle blast: original reference-point scaling (model = reference) or
+   Hopkinson-Cranz scaled-distance with the Kinney-Graham free-air fits
+   (model = kinney_graham, needs the equivalent charge W).
+5. Frequency-dependent ISO 9613-1 absorption applied as a causal
+   (minimum-phase) filter per event and path length (absorption_mode =
+   spectral). The original single-frequency scalar attenuation is kept as
+   absorption_mode = characteristic.
+6. Shock activation threshold M_th (default 1.1).
+7. Arbitrary sensor arrays (tetrahedron, inline list, or CSV file) and an
+   explicit shooter position + bullet direction.
+8. Ground-truth TDOA matrices for all sensor pairs and ordering checks.
 
-All physics here is unchanged from gunshot_generate_detect.ipynb (Sections
-1, 3, 4, 5.1, 5.3, 5.6, 5.8, 6.1, 7) -- this module just holds the shared
-code so the two stages don't duplicate (and risk diverging on) the same
-math. Not meant to be run directly.
+VERIFY BEFORE RELYING ON ABSOLUTE LEVELS
+----------------------------------------
+* WHITHAM_K_P = 0.53 and WHITHAM_K_T = 1.82 are the classical coefficients
+  as remembered from Whitham (1952) / Maher (2006). Check them against the
+  sources and then fit nwave amp_scale / dur_scale to your recordings.
+* The Kinney-Graham expressions are written from memory (Kinney & Graham,
+  Explosive Shocks in Air, 1985). Check them before use. They describe a
+  free-air spherical burst; a ground-level burst is usually modelled with a
+  larger effective charge. For a gun, W is only an empirical surrogate.
+* The 9 mm entry has NO fitted muzzle-blast constants (None). Supply them in
+  [muzzle_blast] (p_ref_pa, r_ref_m, t_pos_ref_s) or use kinney_graham.
 """
 
 import configparser
 import sys
 
 import numpy as np
-from scipy.signal import butter, sosfiltfilt, fftconvolve
 
+import gs_gen_physic as _gp
+from gs_gen_physic import (                                   # re-exported, unchanged
+    C as C_LEGACY, P_ATM, make_tetrahedron, fractional_delay,
+    atmospheric_absorption_coefficient, atmospheric_attenuation_db,
+    apply_atmospheric_attenuation, DEFAULT_ATMOSPHERE,
+    make_room_ir, make_colored_noise, mic_bandpass, quantize,
+    nwave_duration as nwave_duration_legacy,
+)
 
-# ===========================================================================
-# Physical constants
-# ===========================================================================
-C = 343.0             # Speed of sound (m/s), ISA sea level
-P_ATM = 101325.0       # Atmospheric pressure (Pa)
+load_config_legacy = _gp.load_config
 
-BULLET_LIBRARY = {
-    '7.62_NATO': dict(L=0.028, dP0_sw=7.5, b0_sw=50.0,
-                       P_REF_MB=200.0, R_REF_MB=10.0, T_POS_REF=0.003),
-    '5.56_NATO': dict(L=0.023, dP0_sw=7.5, b0_sw=50.0,
-                       P_REF_MB=200.0, R_REF_MB=10.0, T_POS_REF=0.003/4.0),
+__version__ = "1.1-gpt-final"
+
+# ---------------------------------------------------------------------------
+# Constants
+# ---------------------------------------------------------------------------
+WHITHAM_K_P = 0.53      # dP = K_P p0 (M^2-1)^(1/8) d / (L^(1/4) b^(3/4))   [VERIFY]
+WHITHAM_K_T = 1.82      # T  = K_T M d (b/L)^(1/4) / (c (M^2-1)^(3/8))      [VERIFY]
+B_MIN = 0.05            # m, lower bound on b in amplitude/duration laws (avoids b->0 singularity)
+
+BULLET_LIBRARY_CLAUDE = {
+    # d: bullet diameter (m); L: bullet length (m); v0: nominal muzzle velocity (m/s, informational)
+    # dP0_sw/b0_sw/P_REF_MB/R_REF_MB/T_POS_REF: original reference-point constants (legacy models)
+    '7.62_NATO': dict(d=7.82e-3, L=0.028, v0=850.0, dP0_sw=7.5, b0_sw=50.0,
+                      P_REF_MB=200.0, R_REF_MB=10.0, T_POS_REF=0.003),
+    '5.56_NATO': dict(d=5.56e-3, L=0.023, v0=940.0, dP0_sw=7.5, b0_sw=50.0,
+                      P_REF_MB=200.0, R_REF_MB=10.0, T_POS_REF=0.003 / 4.0),
+    # 9 mm: NOT calibrated. Blast constants must be supplied (None = missing).
+    '9mm_Parabellum': dict(d=9.02e-3, L=0.0155, v0=370.0, dP0_sw=None, b0_sw=None,
+                           P_REF_MB=None, R_REF_MB=None, T_POS_REF=None),
 }
 
 
-# ===========================================================================
-# Config loading -- shared schema, each stage only reads the sections it needs
-# ===========================================================================
-DEFAULTS = {
-    "geometry":    {"l_array": "0.30"},
-    "adc":         {"fs": "100000", "bit_depth": "16",
-                     "mic_lo": "40.0", "mic_hi": "20000.0"},
-    "calibration": {"real_noise_rms": "0.000595", "real_rt60": "1.32",
-                     "real_peak_norm": "0.098", "real_noise_slope": "-2.46"},
-    "analog_chain": {"enabled": "false", "mic_sensitivity_mv_per_pa": "22.4",
-                      "preamp_gain_db": "40.0", "adc_vref_peak_v": "2.5"},
-    "adc_multi_channel": {"type": "simultaneous", "conversion_time_us": "2.0",
-                           "gain_mismatch_pct": "0.0", "offset_mismatch_mv": "0.0",
-                           "mismatch_seed": "42"},
-    "bullet":      {"caliber": "5.56_NATO", "mach": "2.5"},
-    "trajectory":  {"range": "200.0", "y_miss": "10.0"},
-    "atmosphere":  {"enabled": "true", "temp_c": "20.0", "humidity_pct": "50.0",
-                     "pressure_kpa": "101.325"},
-    "timing":      {"pre_roll": "0.010", "post_roll": "0.150"},
-    "noise":       {"model": "realistic", "noise_floor_pa": "0.005",
-                     "rt60": "1.25", "noise_rms_pa": "0.075", "noise_slope": "-2.4"},
-    "output":      {"basename": "gunshot_sim", "seed": "0"},
+# ---------------------------------------------------------------------------
+# Small helpers
+# ---------------------------------------------------------------------------
+def speed_of_sound(temp_c):
+    """c = 331.3 sqrt(T/273.15), T in kelvin (m/s)."""
+    return 331.3 * np.sqrt((temp_c + 273.15) / 273.15)
+
+
+def _vec(s, n=3):
+    parts = [p for p in str(s).replace(";", ",").split(",") if p.strip() != ""]
+    v = [float(p) for p in parts]
+    if len(v) != n:
+        raise ValueError(f"expected {n} comma-separated numbers, got '{s}'")
+    return v
+
+
+# ---------------------------------------------------------------------------
+# Configuration (legacy sections via the original loader + extensions)
+# ---------------------------------------------------------------------------
+EXT_DEFAULTS = {
+    "geometry":     {"array_type": "tetrahedron", "mic_positions": "", "mic_positions_file": ""},
+    "bullet":       {"muzzle_velocity_mps": "0", "diameter_mm": "0", "length_mm": "0"},
+    "trajectory":   {"mode": "legacy", "shooter_pos": "", "direction": "",
+                     "azimuth_deg": "0", "elevation_deg": "0"},
+    "propagation":  {"speed_of_sound": "temperature", "wind_mps": "0,0,0",
+                     "absorption_mode": "spectral", "absorption_causal": "true"},
+    "shockwave":    {"model": "whitham", "mach_threshold": "1.1", "outside_cone": "zero",
+                     "amp_scale": "1.0", "dur_scale": "1.0"},
+    "muzzle_blast": {"model": "reference", "amp_scale": "1.0", "dur_scale": "1.0",
+                     "w_g_tnt": "2.0", "p_ref_pa": "", "r_ref_m": "", "t_pos_ref_s": ""},
 }
 
 
-def load_config(path):
-    """Load an .ini config file, falling back to DEFAULTS for anything
-    missing (including a missing file entirely). Returns a nested dict of
-    RESOLVED values (native types) -- used for computation AND echoed back
-    verbatim into the output .json for reproducibility.
-
-    Per-channel hardware: optional [analog_chain_ch0]..[analog_chain_ch3]
-    sections override mic_sensitivity_mv_per_pa/preamp_gain_db for that
-    specific channel; anything not overridden falls back to [analog_chain]'s
-    nominal values. Result is in cfg["analog_chain_per_channel"], a list of
-    4 dicts. This project's array is fixed at 4 mics (make_tetrahedron
-    always returns 4 points), so channels 0-3 are hardcoded here."""
+def load_config_claude(path):
+    """Original resolved config (all legacy sections, unchanged) plus cfg['ext']
+    with the new options. Unknown sections are ignored by the legacy loader, so
+    the same .ini file also works with the unmodified noise / ADC stages."""
+    cfg = load_config_legacy(path)
     cp = configparser.ConfigParser()
-    cp.read_dict(DEFAULTS)
+    cp.read_dict(EXT_DEFAULTS)
     if path is not None:
-        found = cp.read(path)
-        if not found:
-            print(f"WARNING: config file '{path}' not found -- using built-in defaults.",
-                  file=sys.stderr)
+        cp.read(path)
 
-    n_channels = 4
-    nominal = dict(mic_sensitivity_mv_per_pa=cp.getfloat("analog_chain", "mic_sensitivity_mv_per_pa"),
-                   preamp_gain_db=cp.getfloat("analog_chain", "preamp_gain_db"))
-    per_channel = []
-    for i in range(n_channels):
-        section = f"analog_chain_ch{i}"
-        ch = dict(nominal)
-        if cp.has_section(section):
-            if cp.has_option(section, "mic_sensitivity_mv_per_pa"):
-                ch["mic_sensitivity_mv_per_pa"] = cp.getfloat(section, "mic_sensitivity_mv_per_pa")
-            if cp.has_option(section, "preamp_gain_db"):
-                ch["preamp_gain_db"] = cp.getfloat(section, "preamp_gain_db")
-        per_channel.append(ch)
+    def opt_float(sec, key):
+        v = cp.get(sec, key).strip()
+        return float(v) if v != "" else None
 
-    return {
-        "geometry": dict(l_array=cp.getfloat("geometry", "l_array")),
-        "adc": dict(fs=cp.getint("adc", "fs"),
-                    bit_depth=cp.getint("adc", "bit_depth"),
-                    mic_lo=cp.getfloat("adc", "mic_lo"),
-                    mic_hi=cp.getfloat("adc", "mic_hi")),
-        "calibration": dict(real_noise_rms=cp.getfloat("calibration", "real_noise_rms"),
-                             real_rt60=cp.getfloat("calibration", "real_rt60"),
-                             real_peak_norm=cp.getfloat("calibration", "real_peak_norm"),
-                             real_noise_slope=cp.getfloat("calibration", "real_noise_slope")),
-        "analog_chain": dict(enabled=cp.getboolean("analog_chain", "enabled"),
-                              mic_sensitivity_mv_per_pa=nominal["mic_sensitivity_mv_per_pa"],
-                              preamp_gain_db=nominal["preamp_gain_db"],
-                              adc_vref_peak_v=cp.getfloat("analog_chain", "adc_vref_peak_v")),
-        "analog_chain_per_channel": per_channel,
-        "adc_multi_channel": dict(
-            type=cp.get("adc_multi_channel", "type"),
-            conversion_time_us=cp.getfloat("adc_multi_channel", "conversion_time_us"),
-            gain_mismatch_pct=cp.getfloat("adc_multi_channel", "gain_mismatch_pct"),
-            offset_mismatch_mv=cp.getfloat("adc_multi_channel", "offset_mismatch_mv"),
-            mismatch_seed=cp.getint("adc_multi_channel", "mismatch_seed")),
-        "bullet": dict(caliber=cp.get("bullet", "caliber"),
-                       mach=cp.getfloat("bullet", "mach")),
-        "trajectory": dict(range=cp.getfloat("trajectory", "range"),
-                            y_miss=cp.getfloat("trajectory", "y_miss")),
-        "atmosphere": dict(enabled=cp.getboolean("atmosphere", "enabled"),
-                            temp_c=cp.getfloat("atmosphere", "temp_c"),
-                            humidity_pct=cp.getfloat("atmosphere", "humidity_pct"),
-                            pressure_kpa=cp.getfloat("atmosphere", "pressure_kpa")),
-        "timing": dict(pre_roll=cp.getfloat("timing", "pre_roll"),
-                        post_roll=cp.getfloat("timing", "post_roll")),
-        "noise": dict(model=cp.get("noise", "model"),
-                      noise_floor_pa=cp.getfloat("noise", "noise_floor_pa"),
-                      rt60=cp.getfloat("noise", "rt60"),
-                      noise_rms_pa=cp.getfloat("noise", "noise_rms_pa"),
-                      noise_slope=cp.getfloat("noise", "noise_slope")),
-        "output": dict(basename=cp.get("output", "basename"),
-                       seed=cp.getint("output", "seed")),
+    arr_type = cp.get("geometry", "array_type").strip().lower()
+    mic_positions = None
+    if arr_type == "custom":
+        inline = cp.get("geometry", "mic_positions").strip()
+        fpath = cp.get("geometry", "mic_positions_file").strip()
+        if inline:
+            mic_positions = [_vec(row) for row in inline.split(";") if row.strip()]
+        elif fpath:
+            mic_positions = np.loadtxt(fpath, delimiter=",", comments="#", ndmin=2).tolist()
+        else:
+            raise ValueError("geometry.array_type = custom needs mic_positions or mic_positions_file")
+
+    traj_mode = cp.get("trajectory", "mode").strip().lower()
+    shooter_pos = _vec(cp.get("trajectory", "shooter_pos")) if cp.get("trajectory", "shooter_pos").strip() else None
+    direction = _vec(cp.get("trajectory", "direction")) if cp.get("trajectory", "direction").strip() else None
+
+    cfg["ext"] = dict(
+        geometry=dict(array_type=arr_type, mic_positions=mic_positions),
+        bullet=dict(muzzle_velocity_mps=cp.getfloat("bullet", "muzzle_velocity_mps"),
+                    diameter_mm=cp.getfloat("bullet", "diameter_mm"),
+                    length_mm=cp.getfloat("bullet", "length_mm")),
+        trajectory=dict(mode=traj_mode, shooter_pos=shooter_pos, direction=direction,
+                        azimuth_deg=cp.getfloat("trajectory", "azimuth_deg"),
+                        elevation_deg=cp.getfloat("trajectory", "elevation_deg")),
+        propagation=dict(speed_of_sound=cp.get("propagation", "speed_of_sound").strip().lower(),
+                         wind_mps=_vec(cp.get("propagation", "wind_mps")),
+                         absorption_mode=cp.get("propagation", "absorption_mode").strip().lower(),
+                         absorption_causal=cp.getboolean("propagation", "absorption_causal")),
+        shockwave=dict(model=cp.get("shockwave", "model").strip().lower(),
+                       mach_threshold=cp.getfloat("shockwave", "mach_threshold"),
+                       outside_cone=cp.get("shockwave", "outside_cone").strip().lower(),
+                       amp_scale=cp.getfloat("shockwave", "amp_scale"),
+                       dur_scale=cp.getfloat("shockwave", "dur_scale")),
+        muzzle_blast=dict(model=cp.get("muzzle_blast", "model").strip().lower(),
+                          amp_scale=cp.getfloat("muzzle_blast", "amp_scale"),
+                          dur_scale=cp.getfloat("muzzle_blast", "dur_scale"),
+                          w_g_tnt=cp.getfloat("muzzle_blast", "w_g_tnt"),
+                          p_ref_pa=opt_float("muzzle_blast", "p_ref_pa"),
+                          r_ref_m=opt_float("muzzle_blast", "r_ref_m"),
+                          t_pos_ref_s=opt_float("muzzle_blast", "t_pos_ref_s")),
+    )
+    _validate_ext(cfg["ext"])
+    return cfg
+
+
+def _validate_ext(ext):
+    ok = lambda name, v, allowed: (v in allowed) or (_ for _ in ()).throw(
+        ValueError(f"{name} = '{v}' not in {allowed}"))
+    ok("geometry.array_type", ext["geometry"]["array_type"], ("tetrahedron", "custom"))
+    ok("trajectory.mode", ext["trajectory"]["mode"], ("legacy", "explicit"))
+    ok("propagation.speed_of_sound", ext["propagation"]["speed_of_sound"], ("temperature", "fixed"))
+    ok("propagation.absorption_mode", ext["propagation"]["absorption_mode"],
+       ("spectral", "characteristic", "off"))
+    ok("shockwave.model", ext["shockwave"]["model"], ("whitham", "legacy"))
+    ok("shockwave.outside_cone", ext["shockwave"]["outside_cone"], ("zero", "error"))
+    ok("muzzle_blast.model", ext["muzzle_blast"]["model"], ("reference", "kinney_graham"))
+
+
+# ---------------------------------------------------------------------------
+# Scene construction
+# ---------------------------------------------------------------------------
+def build_mic_positions(cfg):
+    g = cfg["ext"]["geometry"]
+    if g["array_type"] == "custom":
+        pos = np.asarray(g["mic_positions"], dtype=float)
+        if pos.ndim != 2 or pos.shape[1] != 3:
+            raise ValueError("mic positions must be an (N, 3) array")
+        return pos
+    return make_tetrahedron(cfg["geometry"]["l_array"])
+
+
+def build_trajectory(cfg):
+    """Returns (bullet_origin = shooter position, unit direction)."""
+    t = cfg["ext"]["trajectory"]
+    if t["mode"] == "legacy":
+        tr = cfg["trajectory"]
+        return np.array([-tr["range"], tr["y_miss"], 0.0]), np.array([1.0, 0.0, 0.0])
+    if t["shooter_pos"] is None:
+        raise ValueError("trajectory.mode = explicit needs shooter_pos")
+    origin = np.asarray(t["shooter_pos"], dtype=float)
+    if t["direction"] is not None:
+        v = np.asarray(t["direction"], dtype=float)
+    else:
+        az, el = np.radians(t["azimuth_deg"]), np.radians(t["elevation_deg"])
+        v = np.array([np.cos(el) * np.cos(az), np.cos(el) * np.sin(az), np.sin(el)])
+    n = np.linalg.norm(v)
+    if n == 0:
+        raise ValueError("trajectory direction has zero length")
+    return origin, v / n
+
+
+def resolve_bullet(cfg, c):
+    """Library entry (copy) with config overrides, and the Mach number."""
+    name = cfg["bullet"]["caliber"]
+    if name not in BULLET_LIBRARY_CLAUDE:
+        raise ValueError(f"Unknown bullet.caliber '{name}' -- valid: {list(BULLET_LIBRARY_CLAUDE)}")
+    bl = dict(BULLET_LIBRARY_CLAUDE[name])
+    eb = cfg["ext"]["bullet"]
+    if eb["diameter_mm"] > 0:
+        bl["d"] = eb["diameter_mm"] * 1e-3
+    if eb["length_mm"] > 0:
+        bl["L"] = eb["length_mm"] * 1e-3
+    if eb["muzzle_velocity_mps"] > 0:
+        M = eb["muzzle_velocity_mps"] / c
+    elif cfg["bullet"]["mach"] > 0:
+        M = cfg["bullet"]["mach"]
+    else:
+        M = bl["v0"] / c
+    return bl, float(M)
+
+
+# ---------------------------------------------------------------------------
+# Shockwave geometry (closed form) -- see paper Sec. 3.2
+# ---------------------------------------------------------------------------
+
+def _validate_supersonic_mach(M: float, mach_threshold: float = 1.1) -> None:
+    """Raise a clear error when a ballistic shock model is not applicable."""
+    if not np.isfinite(M):
+        raise ValueError(f"Mach number must be finite, got {M!r}")
+    if M <= 1.0:
+        raise ValueError(
+            f"Supersonic shock model requires M > 1; got M={M:.6g}."
+        )
+    if mach_threshold is not None and M < float(mach_threshold):
+        raise ValueError(
+            f"Mach number M={M:.6g} is below the configured shock-model "
+            f"threshold {mach_threshold:.6g}."
+        )
+
+
+def _effective_sound_speed(c: float, wind: np.ndarray | None,
+                           direction: np.ndarray) -> float:
+    """Return acoustic propagation speed along a ray, including optional wind."""
+    if wind is None:
+        return float(c)
+    c_eff = float(c) + float(np.dot(wind, direction))
+    if c_eff <= 0.0:
+        raise ValueError(
+            f"Effective sound speed must be positive; got {c_eff:.6g} m/s."
+        )
+    return c_eff
+
+
+def shock_geometry(
+    origin: np.ndarray,
+    direction: np.ndarray,
+    mic_pos: np.ndarray,
+    M: float,
+    c: float,
+    wind: np.ndarray | None = None,
+    mach_threshold: float = 1.1,
+) -> dict:
+    """
+    Return the retarded shock-wave geometry and arrival timing.
+
+    The cone condition is evaluated before any square-root of M^2-1.
+    This prevents the previous M<=1 crash and makes the configured Mach
+    threshold operational.
+    """
+    _validate_supersonic_mach(M, mach_threshold)
+
+    origin = np.asarray(origin, dtype=float)
+    direction = np.asarray(direction, dtype=float)
+    mic_pos = np.asarray(mic_pos, dtype=float)
+
+    dn = np.linalg.norm(direction)
+    if dn == 0.0:
+        raise ValueError("Trajectory direction must be non-zero.")
+    vhat = direction / dn
+
+    r = mic_pos - origin
+    a = float(np.dot(r, vhat))
+    bvec = r - a * vhat
+    b = float(np.linalg.norm(bvec))
+
+    beta = float(np.sqrt(M * M - 1.0))
+    s = a - b / beta
+    in_cone = bool(s >= 0.0)
+
+    result = {
+        "a": a,
+        "b": b,
+        "beta": beta,
+        "s": s,
+        "in_cone": in_cone,
+        "R_shock": float(M * b / beta),
+        "x_emit": None,
+        "t_emit": None,
+        "t_arrive": None,
+        "c_eff": None,
     }
 
+    if not in_cone:
+        return result
 
-# ===========================================================================
-# Section 1 -- Sensor geometry
-# ===========================================================================
-def make_tetrahedron(edge_length):
-    raw = np.array([[0.000, 0.000, 1.000], [0.000, 0.943, -0.333],
-                     [-0.816, -0.471, -0.333], [0.816, -0.471, -0.333]], dtype=float)
-    scale = edge_length / np.linalg.norm(raw[0] - raw[1])
-    return raw * scale
+    x_emit = origin + s * vhat
+    t_emit = s / (M * float(c))
 
+    # Shock propagation direction from emission point to microphone.
+    ray = mic_pos - x_emit
+    ray_norm = float(np.linalg.norm(ray))
+    if ray_norm == 0.0:
+        # Degenerate but well-defined limiting case.
+        rhat = vhat
+    else:
+        rhat = ray / ray_norm
 
-# ===========================================================================
-# Section 2 -- Mic sensitivity / ADC (used only by the noise-adding stage)
-# ===========================================================================
-def mic_bandpass(x, fs, lo, hi, order=4):
-    sos = butter(order, [lo, min(hi, fs/2*0.99)], btype='band', fs=fs, output='sos')
-    return sosfiltfilt(sos, x)
+    c_eff = _effective_sound_speed(float(c), wind, rhat)
+    t_arrive = t_emit + ray_norm / c_eff
 
+    result.update(
+        x_emit=x_emit,
+        t_emit=float(t_emit),
+        t_arrive=float(t_arrive),
+        c_eff=float(c_eff),
+        R_shock=float(ray_norm),
+    )
+    return result
 
-def quantize(x, bits, full_scale=1.0):
-    levels = 2 ** (bits - 1)
-    return np.round(np.clip(x, -full_scale, full_scale) * levels) / levels
-
-
-# ===========================================================================
-# Analog gain chain (mic sensitivity -> preamp gain -> ADC reference) --
-# an alternative, hardware-derived way to compute the Pa-to-normalized-code
-# calibration scale, instead of empirically peak-matching to a real
-# recording. Useful for evaluating a candidate mic/preamp/ADC combination
-# from datasheet numbers alone, before you have a real recording with that
-# hardware to calibrate against.
-#
-# Chain:  v_mic = S_mic . p          (mic sensitivity, V/Pa)
-#         v_out = 10^(G_dB/20) . v_mic   (preamp gain)
-#         code  = v_out / V_ref_peak      (normalized to +-1 at full scale)
-#
-#   => PA_TO_NORM = S_mic . 10^(G_dB/20) / V_ref_peak
-# ===========================================================================
-def dbv_per_pa_to_v_per_pa(dbv_per_pa):
-    """Convert a mic sensitivity given in dBV/Pa (a common datasheet
-    convention, e.g. '-38 dBV/Pa' or 'dBV re 1V/Pa at 94dB SPL / 1kHz') to
-    linear V/Pa."""
-    return 10 ** (dbv_per_pa / 20.0)
+def muzzle_arrival(sensor_pos, shooter_pos, c, wind=None):
+    q = np.asarray(sensor_pos, dtype=float) - shooter_pos
+    r = float(np.linalg.norm(q))
+    c_eff = c
+    if wind is not None and r > 0:
+        c_eff = c + float(np.dot(wind, q / r))
+    return r / c_eff, r, c_eff
 
 
-def gain_chain_scale(mic_sensitivity_v_per_pa, preamp_gain_db, adc_vref_peak_v):
-    """PA_TO_NORM scale factor from explicit hardware specs: mic sensitivity
-    (V/Pa), preamp gain (dB), and the ADC's peak input voltage for full
-    scale (the voltage that maps to a normalized code of +-1.0 -- check your
-    ADC's datasheet for whether this is Vref, Vref/2, or something else
-    depending on its input architecture)."""
-    preamp_gain_linear = 10 ** (preamp_gain_db / 20.0)
-    return mic_sensitivity_v_per_pa * preamp_gain_linear / adc_vref_peak_v
+# ---------------------------------------------------------------------------
+# N-wave (shockwave) amplitude and duration
+# ---------------------------------------------------------------------------
+def nwave_params(b, M, c, bullet, model="whitham", amp_scale=1.0, dur_scale=1.0, p_atm=P_ATM, b_min: float = B_MIN):
+    """Peak overpressure (Pa) and total duration T_N (s) at perpendicular distance b.
 
-
-# ===========================================================================
-# Shared-ADC, multi-channel effects: what a SINGLE ADC chip sampling all 4
-# mic channels adds beyond each channel's own mic/preamp gain-chain scale.
-#
-#   - Channel-to-channel gain/offset mismatch: real, but usually a small
-#     effect (~0.1-0.5% typical datasheet spec).
-#   - Timing skew, IF the ADC is multiplexed rather than simultaneous-
-#     sampling: NOT a small effect for a TDOA-based system -- a multiplexed
-#     ADC samples channels sequentially, so channel i is delayed by
-#     i * conversion_time relative to channel 0, directly corrupting the
-#     microsecond-scale timing this whole array exists to measure.
-# ===========================================================================
-def fractional_delay(x, delay_samples):
-    """Delay a signal by a (possibly non-integer) number of samples, via
-    FFT-domain linear phase shift -- exact for band-limited signals, unlike
-    a simple np.roll which only handles whole-sample shifts. Validated
-    against np.roll for integer delays (agreement to float64 precision) and
-    against cross-correlation-estimated sub-sample lag for fractional
-    delays (agreement to <0.001 samples)."""
-    n = len(x)
-    X = np.fft.rfft(x)
-    freqs = np.fft.rfftfreq(n)
-    phase_shift = np.exp(-2j * np.pi * freqs * delay_samples)
-    return np.fft.irfft(X * phase_shift, n=n)
-
-
-# ===========================================================================
-# Section 5.1 -- Shockwave (Mach cone) arrival physics
-# ===========================================================================
-def shockwave_arrival(sensor_pos, bullet_origin, v_hat, M, c):
-    beta = np.sqrt(M**2 - 1.0)
-    r = sensor_pos - bullet_origin
-    a = float(np.dot(r, v_hat))
-    b = float(np.linalg.norm(r - a * v_hat))
-    if a - b / beta < 0:
+    whitham: classical weak-shock scaling (b^-3/4, b^1/4; depends on d, L, M)
+        dP  = K_P p_atm (M^2-1)^(1/8) d / (L^(1/4) b^(3/4))
+        T_N = K_T M d (b/L)^(1/4) / (c (M^2-1)^(3/8))
+    legacy: the original reference-point model (b^-1/2, b^1/2).
+    """
+    be = float(b)
+    if be < float(b_min):
         raise ValueError(
-            f"Sensor outside Mach cone (a={a:.1f} < b/beta={b/beta:.1f}). "
-            "Increase trajectory.range or reduce trajectory.y_miss.")
-    return (a + b*beta)/(M*c), (a - b/beta)/(M*c), a, b   # t_arrive, t_emit, a, b
+            f"Perpendicular distance b={be:.6g} m is below b_min="
+            f"{b_min:.6g} m. Set b_min=0 to disable this guard."
+        )
+    if be <= 0.0:
+        raise ValueError("Perpendicular distance b must be > 0.")
+    if M <= 1.0:
+        raise ValueError(f"N-wave model requires M > 1; got M={M:.6g}.")
+    k = M * M - 1.0
+    if model == "whitham":
+        dP = WHITHAM_K_P * p_atm * k ** (1 / 8) * bullet["d"] / (bullet["L"] ** 0.25 * be ** 0.75)
+        T = WHITHAM_K_T * M * bullet["d"] * (be / bullet["L"]) ** 0.25 / (c * k ** (3 / 8))
+    elif model == "legacy":
+        if bullet.get("dP0_sw") is None:
+            raise ValueError("legacy N-wave constants are not defined for this bullet")
+        dP = bullet["dP0_sw"] * np.sqrt(bullet["b0_sw"] / be)
+        T = nwave_duration_legacy(be, M, c, bullet["L"])
+    else:
+        raise ValueError(model)
+    return float(dP * amp_scale), float(T * dur_scale)
 
 
-# ===========================================================================
-# Section 5.3 -- N-wave (Whitham weak-shock model)
-# ===========================================================================
-def nwave_duration(b, M, c, L):
-    return (2.0/(M*c)) * np.sqrt(b*L / np.sqrt(M**2 - 1.0))
-
-
-def nwave_peak_pressure(b, b_ref, dP_ref, freq_hz=None, distance_m=None, atmosphere=None):
-    dP = dP_ref * np.sqrt(b_ref/b)
-    if atmosphere is not None and freq_hz is not None and distance_m is not None:
-        dP, _ = apply_atmospheric_attenuation(dP, freq_hz, distance_m, atmosphere)
-    return dP
-
-
-def nwave_waveform(t, t_arrive, b, M, c, L, b_ref, dP_ref, atmosphere=None):
-    """atmosphere: None (default, no absorption -- original behavior) or an
-    atmosphere-params dict (see atmospheric_absorption_coefficient). When
-    given, dP is additionally attenuated using the N-wave's characteristic
-    frequency (~1/T_N) over a propagation distance of b (the shockwave
-    reaches the sensor from its closest approach on the trajectory, roughly
-    distance b away -- consistent with the existing b-based spreading law)."""
-    T_N = nwave_duration(b, M, c, L)
-    f_char = 1.0 / T_N
-    dP = nwave_peak_pressure(b, b_ref, dP_ref, freq_hz=f_char, distance_m=b, atmosphere=atmosphere)
+def nwave_waveform_claude(t, t_arrive, dP, T_N):
+    """Linear N-wave: +dP at the leading shock (t_arrive), 0 at T_N/2, -dP at T_N."""
     p = np.zeros(len(t))
     mask = (t >= t_arrive) & (t < t_arrive + T_N)
-    tau = t[mask] - t_arrive
-    p[mask] = dP * (1.0 - 2.0*tau/T_N)
-    return p, T_N, dP
+    p[mask] = dP * (1.0 - 2.0 * (t[mask] - t_arrive) / T_N)
+    return p
 
 
-# ===========================================================================
-# Section 5.6 -- Friedlander muzzle blast (Hopkinson-Cranz scaling)
-# ===========================================================================
-def friedlander_params(r, P_REF_MB, R_REF_MB, T_POS_REF, atmosphere=None):
-    dP = P_REF_MB * (R_REF_MB/r)
-    t_pos = T_POS_REF * (r/R_REF_MB) ** (1.0/3.0)
-    if atmosphere is not None:
-        f_char = 1.0 / t_pos
-        dP, _ = apply_atmospheric_attenuation(dP, f_char, r, atmosphere)
-    return dP, t_pos
+# ---------------------------------------------------------------------------
+# Muzzle blast amplitude and duration
+# ---------------------------------------------------------------------------
+def kinney_graham(Z):
+    """Free-air burst fits (Kinney & Graham 1985) [VERIFY].
+    Z in m/kg^(1/3). Returns (p_so / p_atm, t_d / W^(1/3) in s/kg^(1/3))."""
+    Z = float(Z)
+    ps = 808.0 * (1.0 + (Z / 4.5) ** 2) / np.sqrt(
+        (1.0 + (Z / 0.048) ** 2) * (1.0 + (Z / 0.32) ** 2) * (1.0 + (Z / 1.35) ** 2))
+    td_ms = 980.0 * (1.0 + (Z / 0.54) ** 10) / (
+        (1.0 + (Z / 0.02) ** 3) * (1.0 + (Z / 0.74) ** 6) * np.sqrt(1.0 + (Z / 6.9) ** 2))
+    return float(ps), float(td_ms * 1e-3)
 
 
-def friedlander_waveform(t, t_arrive, r, P_REF_MB, R_REF_MB, T_POS_REF, atmosphere=None):
-    """atmosphere: None (default) or an atmosphere-params dict. Muzzle blast
-    propagates spherically over the full range r, so both the geometric
-    (1/r) and atmospheric attenuation use the same distance r."""
-    dP, t_pos = friedlander_params(r, P_REF_MB, R_REF_MB, T_POS_REF, atmosphere=atmosphere)
+def blast_params(r, bullet, model="reference", amp_scale=1.0, dur_scale=1.0,
+                 p_atm=P_ATM, w_kg=None, overrides=None):
+    """Peak overpressure (Pa) and positive-phase duration (s) at muzzle range r."""
+    if model == "reference":
+        ov = overrides or {}
+        P_REF = ov.get("p_ref_pa") if ov.get("p_ref_pa") is not None else bullet["P_REF_MB"]
+        R_REF = ov.get("r_ref_m") if ov.get("r_ref_m") is not None else bullet["R_REF_MB"]
+        T_REF = ov.get("t_pos_ref_s") if ov.get("t_pos_ref_s") is not None else bullet["T_POS_REF"]
+        if P_REF is None or R_REF is None or T_REF is None:
+            raise ValueError("muzzle-blast reference constants are missing for this bullet: set "
+                             "[muzzle_blast] p_ref_pa, r_ref_m, t_pos_ref_s, or use model = kinney_graham")
+        dP = P_REF * (R_REF / r)
+        t_pos = T_REF * (r / R_REF) ** (1.0 / 3.0)
+    elif model == "kinney_graham":
+        if w_kg is None or w_kg <= 0:
+            raise ValueError("kinney_graham needs a positive charge W (muzzle_blast.w_g_tnt)")
+        Z = r / w_kg ** (1.0 / 3.0)
+        ps, td = kinney_graham(Z)
+        dP, t_pos = ps * p_atm, td * w_kg ** (1.0 / 3.0)
+    else:
+        raise ValueError(model)
+    return float(dP * amp_scale), float(t_pos * dur_scale)
+
+
+def friedlander_waveform_claude(t, t_arrive, dP, t_pos):
     p = np.zeros(len(t))
     mask = t >= t_arrive
     tau = t[mask] - t_arrive
-    p[mask] = dP * (1.0 - tau/t_pos) * np.exp(-tau/t_pos)
-    return p, t_pos, dP
+    p[mask] = dP * (1.0 - tau / t_pos) * np.exp(-tau / t_pos)
+    return p
 
 
-# ===========================================================================
-# Atmospheric absorption (ISO 9613-1) -- optional, additional to the
-# existing geometric (1/sqrt(b) or 1/r) spreading laws above. Frequency-
-# dependent molecular absorption from oxygen/nitrogen relaxation, the
-# dominant loss mechanism at ranges beyond a few hundred meters that the
-# pure geometric-spreading model has no way to capture on its own.
-#
-# Validated against published reference values (ISO 9613-1 / Bass et al.
-# 1995 style tables): at 4000 Hz, 20 C, this implementation computes
-# 109.8 dB/km at 10% RH (reference: 109 dB/km) and 23.1 dB/km at 70% RH
-# (reference: 23 dB/km) -- both within ~1%.
-# ===========================================================================
-DEFAULT_ATMOSPHERE = dict(temp_c=20.0, humidity_pct=50.0, pressure_kpa=101.325)
+# ---------------------------------------------------------------------------
+# Atmospheric absorption
+# ---------------------------------------------------------------------------
+def characteristic_attenuation(dP, T_char, distance_m, atmosphere):
+    """Original behaviour: one attenuation value at f = 1/T_char applied to the peak."""
+    return apply_atmospheric_attenuation(dP, 1.0 / T_char, distance_m, atmosphere)
 
 
-def atmospheric_absorption_coefficient(freq_hz, temp_c=20.0, humidity_pct=50.0, pressure_kpa=101.325):
-    """ISO 9613-1 atmospheric absorption coefficient, in dB/m, for a pure
-    tone at freq_hz. Combines classical (viscous/thermal) absorption with
-    oxygen and nitrogen molecular relaxation, both humidity- and
-    temperature-dependent."""
-    T = temp_c + 273.15       # K
-    T0 = 293.15                # reference temp, 20 C
-    T01 = 273.16                # triple-point temp
-    Pr = 101.325                # reference pressure, kPa
-    Pa = pressure_kpa
-    hr = humidity_pct
-    f = np.asarray(freq_hz, dtype=float)
+def spectral_absorption(x, fs, distance_m, atmosphere, causal=True):
+    """Apply ISO 9613-1 absorption |H(f)| = 10^(-alpha(f) d / 20) to one event.
 
-    psat_over_pr = 10 ** (-6.8346 * (T01/T)**1.261 + 4.6151)
-    h = hr * psat_over_pr       # molar concentration of water vapor, %
-
-    frO = (Pa/Pr) * (24 + 4.04e4 * h * (0.02 + h) / (0.391 + h))
-    frN = (Pa/Pr) * (T/T0)**(-0.5) * (9 + 280*h*np.exp(-4.170 * ((T/T0)**(-1.0/3.0) - 1)))
-
-    term1 = 1.84e-11 * (Pr/Pa) * (T/T0)**0.5
-    term2 = (T/T0)**(-2.5) * (
-        0.01275 * np.exp(-2239.1/T) / (frO + f**2/frO) +
-        0.1068 * np.exp(-3352.0/T) / (frN + f**2/frN)
-    )
-    return 8.686 * f**2 * (term1 + term2)   # dB/m
-
-
-def atmospheric_attenuation_db(freq_hz, distance_m, temp_c=20.0, humidity_pct=50.0, pressure_kpa=101.325):
-    return atmospheric_absorption_coefficient(freq_hz, temp_c, humidity_pct, pressure_kpa) * distance_m
-
-
-def apply_atmospheric_attenuation(dP, freq_hz, distance_m, atmosphere):
-    """Reduce a peak-pressure value dP by ISO 9613-1 atmospheric absorption
-    at freq_hz over distance_m. atmosphere: dict with temp_c/humidity_pct/
-    pressure_kpa (missing keys fall back to DEFAULT_ATMOSPHERE). Returns
-    (dP_attenuated, attenuation_db)."""
+    causal = True builds the minimum-phase filter with that magnitude (folded
+    cepstrum), so nothing appears before the geometric arrival time; False
+    applies the magnitude only (zero phase, small pre-ringing).
+    """
+    x = np.asarray(x, dtype=float)
+    n = len(x)
+    nfft = 1 << int(np.ceil(np.log2(max(2 * n, 16))))
+    f = np.fft.rfftfreq(nfft, 1.0 / fs)
     params = dict(DEFAULT_ATMOSPHERE)
     params.update(atmosphere)
-    atten_db = atmospheric_attenuation_db(freq_hz, distance_m, **params)
-    return dP * 10**(-atten_db/20.0), float(atten_db)
-
-
-# ===========================================================================
-# Section 6.1 -- Noise / reverberation models (used only by gs_gen_add_noise.py)
-# ===========================================================================
-def make_room_ir(rt60, fs, duration=None, seed=None):
-    rng = np.random.default_rng(seed)
-    if duration is None:
-        duration = rt60 * 1.2
-    n = int(duration * fs)
-    t = np.arange(n) / fs
-    decay = 10 ** (-3.0*t/rt60)
-    ir = decay * rng.standard_normal(n)
-    ir[0] = 1.0
-    return ir
-
-
-def make_colored_noise(n, fs, slope, rms, seed=None):
-    rng = np.random.default_rng(seed)
-    white = rng.standard_normal(n)
-    X = np.fft.rfft(white)
-    freqs = np.fft.rfftfreq(n, d=1/fs)
-    freqs[0] = freqs[1]
-    X = X * (freqs ** (slope/2.0))
-    colored = np.fft.irfft(X, n=n)
-    return colored / (np.sqrt(np.mean(colored**2)) + 1e-12) * rms
+    mag = 10.0 ** (-atmospheric_attenuation_db(f, distance_m, **params) / 20.0)
+    if causal:
+        logm = np.log(np.maximum(mag, 1e-30))
+        full = np.concatenate([logm, logm[-2:0:-1]])
+        cep = np.fft.ifft(full).real
+        fold = np.zeros(nfft)
+        fold[0] = cep[0]
+        fold[1:nfft // 2] = 2.0 * cep[1:nfft // 2]
+        fold[nfft // 2] = cep[nfft // 2]
+        H = np.exp(np.fft.fft(fold))[: nfft // 2 + 1]
+    else:
+        H = mag
+    return np.fft.irfft(np.fft.rfft(x, nfft) * H, nfft)[:n]
