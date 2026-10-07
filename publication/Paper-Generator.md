@@ -5,6 +5,12 @@
 
 ---
 
+Author : Rizki Ardianto (edes) ;   Denny Darlis ;   Saladin Prawirasastra (bibin)
+
+Telkom University, Bandung, Indonesia
+
+---
+
 ## Abstract
 
 The development of acoustic gunshot detection systems is constrained by the limited availability of well-characterized multichannel gunshot recordings acquired under controlled conditions. Live-fire data collection is costly, difficult to reproduce, and subject to safety and logistical constraints. This paper presents a physics-based acoustic signal generator that synthesizes multichannel gunshot recordings from a compact set of physical, geometric, environmental, and sensor parameters.
