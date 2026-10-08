@@ -1,34 +1,23 @@
 #!/usr/bin/env python3
 """
 gs_gen_clean_signal.py
-===========================
-STAGE 1 of 2. Generates the pure, noiseless acoustic signal a gunshot
-produces at each of the 4 microphones -- shockwave (N-wave) + muzzle blast
-(Friedlander pulse), physics only. No noise, no reverb, no mic/ADC response,
-no quantization. That's all added separately by gs_gen_add_noise.py.
-
-Why separate: the physics here is deterministic given the config (geometry,
-bullet, trajectory) -- run it once, then feed the same clean signal through
-gs_gen_add_noise.py as many times as you like with different noise/reverb/ADC
-settings, without re-deriving the physics each time.
+======================
+STAGE 1. Noiseless multichannel gunshot pressure signal: ballistic shockwave (N-wave) plus muzzle
+blast (Friedlander pulse), physics only. Writes <o>_clean.wav (float32, Pa) and <o>_clean.json
+(configuration and exact ground truth: arrival times, TDOAs, geometry, checks).
 
 Usage
 -----
-  python gs_gen_clean_signal.py                      # uses gen_config.ini in cwd
-  python gs_gen_clean_signal.py my_config.ini
-  python gs_gen_clean_signal.py my_config.ini -o my_shot
+  python gs_gen_clean_signal.py gen_config.ini
+  python gs_gen_clean_signal.py gen_config.ini -o my_shot
 
-Output
-------
-  <output>_clean.wav   4-channel, 32-bit FLOAT PCM, actual Pa values (NOT
-                        normalized to +-1 -- float WAV doesn't require that,
-                        and normalizing here would lose the physical units
-                        gs_gen_add_noise.py's calibration step needs)
-  <output>_clean.json  ground-truth geometry/timing/amplitude for every mic
+Next stages: gs_gen_add_noise.py, then gs_gen_apply_adc.py (both assume 4 channels; for arrays
+with another number of sensors use the clean output directly).
 
-Only reads the [geometry], [bullet], [trajectory], [timing], and adc.fs
-sections of the config -- everything noise/ADC-response/bit-depth related
-belongs to Stage 2 and is ignored here.
+Model summary (see gs_gen_physic.py): Mach-cone shock arrival in closed form, Whitham N-wave,
+Friedlander blast with Hopkinson-Cranz/Kinney-Graham scaling, speed of sound from temperature,
+optional first-order wind, causal ISO 9613-1 absorption per event, no shock below
+shockwave.mach_threshold and at sensors the Mach cone does not reach.
 """
 
 import argparse
@@ -41,148 +30,178 @@ from scipy.io import wavfile
 import gs_gen_physic as gp
 
 
+def _none_if_nan(x):
+    return None if (x is None or (isinstance(x, float) and np.isnan(x))) else float(x)
+
+
+def _matrix_us(times):
+    """N x N TDOA matrix in microseconds (row i minus column j); None where an event is absent."""
+    t = np.asarray(times, dtype=float)
+    m = (t[:, None] - t[None, :]) * 1e6
+    return [[_none_if_nan(v) for v in row] for row in m]
+
+
 def generate_clean(cfg):
-    geo, bul, traj, tim = cfg["geometry"], cfg["bullet"], cfg["trajectory"], cfg["timing"]
-    atm_cfg = cfg["atmosphere"]
+    """Returns (list of per-sensor signals in Pa, sample rate, ground-truth dict)."""
+    prop, shk, mbc = cfg["propagation"], cfg["shockwave"], cfg["muzzle_blast"]
+    tim, atm_cfg = cfg["timing"], cfg["atmosphere"]
     FS = cfg["adc"]["fs"]
 
     atmosphere = None
     if atm_cfg["enabled"]:
         atmosphere = dict(temp_c=atm_cfg["temp_c"], humidity_pct=atm_cfg["humidity_pct"],
-                           pressure_kpa=atm_cfg["pressure_kpa"])
+                          pressure_kpa=atm_cfg["pressure_kpa"])
+    p_atm = atm_cfg["pressure_kpa"] * 1e3
 
-    # -- Section 1: array geometry --------------------------------------------
-    mic_pos = gp.make_tetrahedron(geo["l_array"])
+    c = gp.speed_of_sound(atm_cfg["temp_c"])
+    wind = np.asarray(prop["wind_mps"], dtype=float)
+    wind = wind if np.linalg.norm(wind) > 0 else None
+
+    mic_pos = gp.build_mic_positions(cfg)
     n_mics = len(mic_pos)
+    bullet, M = gp.resolve_bullet(cfg, c)
+    origin, v_hat = gp.build_trajectory(cfg)
+    shooter = origin.copy()
+    shock_on = M > max(shk["mach_threshold"], 1.0)
 
-    # -- Section 3: bullet property --------------------------------------------
-    if bul["caliber"] not in gp.BULLET_LIBRARY:
-        raise ValueError(
-            f"Unknown bullet.caliber '{bul['caliber']}' -- valid options: "
-            f"{list(gp.BULLET_LIBRARY.keys())}")
-    bl = gp.BULLET_LIBRARY[bul["caliber"]]
-    L_BULLET, dP0_sw, b0_sw = bl["L"], bl["dP0_sw"], bl["b0_sw"]
-    P_REF_MB, R_REF_MB, T_POS_REF = bl["P_REF_MB"], bl["R_REF_MB"], bl["T_POS_REF"]
-    M = bul["mach"]
-    V_BULLET = M * gp.C
-
-    # -- Section 4: trajectory / shooter position -------------------------------
-    RANGE, Y_MISS = traj["range"], traj["y_miss"]
-    BULLET_ORIGIN = np.array([-RANGE, Y_MISS, 0.0])
-    V_HAT = np.array([1.0, 0.0, 0.0])
-    SHOOTER_POS = BULLET_ORIGIN.copy()
-
-    # -- Section 5.1: shockwave arrivals ----------------------------------------
-    t_arr = np.zeros(n_mics); t_emi = np.zeros(n_mics)
-    a_all = np.zeros(n_mics); b_all = np.zeros(n_mics)
+    # ---- arrival times ------------------------------------------------------------------
+    geo = [gp.shock_geometry(p, origin, v_hat, M, c, wind) if shock_on else None for p in mic_pos]
+    t_mb = np.zeros(n_mics)
+    r_mb = np.zeros(n_mics)
     for i, p in enumerate(mic_pos):
-        t_arr[i], t_emi[i], a_all[i], b_all[i] = gp.shockwave_arrival(
-            p, BULLET_ORIGIN, V_HAT, M, gp.C)
+        t_mb[i], r_mb[i], _ = gp.muzzle_arrival(p, shooter, c, wind)
+    t_sw = np.array([g["t_arrive"] if (g is not None and g["in_cone"]) else np.nan for g in geo]) \
+        if shock_on else np.full(n_mics, np.nan)
 
-    # -- Section 5.5: muzzle blast arrivals -------------------------------------
-    r_mb_all = np.array([np.linalg.norm(p - SHOOTER_POS) for p in mic_pos])
-    t_mb = r_mb_all / gp.C
-
-    # -- Section 5.8: master timeline + ideal (noiseless) per-mic signal --------
-    t0 = min(t_arr.min(), t_mb.min()) - tim["pre_roll"]
+    # ---- master time axis -------------------------------------------------------------------
+    t0 = np.nanmin(np.concatenate([t_sw, t_mb])) - tim["pre_roll"]
     t1 = t_mb.max() + tim["post_roll"]
-    t_master = np.arange(t0, t1, 1.0/FS)
+    t_master = np.arange(t0, t1, 1.0 / FS)
 
-    T_Ns = np.zeros(n_mics); dP_sw_all = np.zeros(n_mics)
-    t_pos_all = np.zeros(n_mics); dP_mb_all = np.zeros(n_mics)
-    atten_sw_db = np.zeros(n_mics); atten_mb_db = np.zeros(n_mics)
-    ideal_signals = []
+    # ---- waveforms -----------------------------------------------------------------------------
+    w_kg = mbc["w_g_tnt"] * 1e-3
+    signals = []
+    T_N = np.full(n_mics, np.nan)
+    dP_sw = np.full(n_mics, np.nan)
+    t_pos = np.zeros(n_mics)
+    dP_mb = np.zeros(n_mics)
+    att_sw = np.zeros(n_mics)
+    att_mb = np.zeros(n_mics)
+
     for i in range(n_mics):
-        sw, T_N, dP_sw = gp.nwave_waveform(t_master, t_arr[i], b_all[i], M, gp.C,
-                                            L_BULLET, b0_sw, dP0_sw, atmosphere=atmosphere)
-        mb, t_pos, dP_mb = gp.friedlander_waveform(t_master, t_mb[i], r_mb_all[i],
-                                                     P_REF_MB, R_REF_MB, T_POS_REF,
-                                                     atmosphere=atmosphere)
-        T_Ns[i], dP_sw_all[i], t_pos_all[i], dP_mb_all[i] = T_N, dP_sw, t_pos, dP_mb
+        sw = np.zeros(len(t_master))
+        if shock_on and geo[i]["in_cone"]:
+            g = geo[i]
+            dP, T = gp.nwave_params(g["b"], M, c, bullet, shk["amp_scale"], shk["dur_scale"], p_atm)
+            sw = gp.nwave_waveform(t_master, g["t_arrive"], dP, T)
+            if atmosphere is not None:
+                sw = gp.spectral_absorption(sw, FS, g["R"], atmosphere)
+                att_sw[i] = float(gp.atmospheric_attenuation_db(1.0 / T, g["R"], **atmosphere))
+            dP_sw[i], T_N[i] = dP, T
+
+        dP, tp = gp.blast_params(r_mb[i], w_kg, mbc["amp_scale"], mbc["dur_scale"], p_atm)
+        mb = gp.friedlander_waveform(t_master, t_mb[i], dP, tp)
         if atmosphere is not None:
-            atten_sw_db[i] = gp.atmospheric_attenuation_db(1.0/T_N, b_all[i], **atmosphere)
-            atten_mb_db[i] = gp.atmospheric_attenuation_db(1.0/t_pos, r_mb_all[i], **atmosphere)
-        ideal_signals.append(sw + mb)
+            mb = gp.spectral_absorption(mb, FS, r_mb[i], atmosphere)
+            att_mb[i] = float(gp.atmospheric_attenuation_db(1.0 / tp, r_mb[i], **atmosphere))
+        dP_mb[i], t_pos[i] = dP, tp
+        signals.append(sw + mb)
+
+    # ---- ground truth ---------------------------------------------------------------------------
+    per_mic = []
+    for i in range(n_mics):
+        g = geo[i]
+        reason = None
+        if not shock_on:
+            reason = "below_mach_threshold"
+        elif not g["in_cone"]:
+            reason = "outside_mach_cone"
+        sw_rec = dict(active=reason is None, inactive_reason=reason)
+        if g is not None:
+            sw_rec.update(along_track_a_m=g["a"], perp_dist_b_m=g["b"], emission_coord_s_m=g["s"])
+        if reason is None:
+            sw_rec.update(t_arrive_s=float(t_sw[i]), t_emit_s=float(g["t_emit"]),
+                          acoustic_path_R_m=float(g["R"]), duration_T_N_s=float(T_N[i]),
+                          peak_dP_pa=float(dP_sw[i]), atmospheric_attenuation_db=float(att_sw[i]))
+        per_mic.append(dict(
+            mic_index=i, shockwave=sw_rec,
+            muzzle_blast=dict(t_arrive_s=float(t_mb[i]), range_m=float(r_mb[i]),
+                              positive_phase_t_pos_s=float(t_pos[i]), peak_dP_pa=float(dP_mb[i]),
+                              atmospheric_attenuation_db=float(att_mb[i]))))
+
+    active = ~np.isnan(t_sw)
+    sep = (t_mb - t_sw)[active] if active.any() else np.array([])
+    checks = dict(
+        shock_before_blast_all_active=bool(np.all(sep > 0)) if sep.size else None,
+        min_blast_minus_shock_s=float(sep.min()) if sep.size else None,
+        events_overlap_any=bool(np.any(sep < T_N[active])) if sep.size else None,
+        n_sensors_with_shock=int(active.sum()), n_sensors=int(n_mics))
 
     ground_truth = dict(
-        mic_pos=mic_pos.tolist(),
-        shooter_pos=SHOOTER_POS.tolist(),
-        bullet_origin=BULLET_ORIGIN.tolist(),
-        trajectory_direction=V_HAT.tolist(),
-        bullet_speed_mps=V_BULLET,
-        sample_rate_hz=FS,
-        atmosphere_applied=atmosphere,
-        t_master_start_s=float(t0),
-        t_master_end_s=float(t1),
-        n_samples=len(t_master),
-        per_mic=[
-            dict(mic_index=i,
-                 shockwave=dict(t_arrive_s=float(t_arr[i]), t_emit_s=float(t_emi[i]),
-                                 along_track_a_m=float(a_all[i]), perp_dist_b_m=float(b_all[i]),
-                                 duration_T_N_s=float(T_Ns[i]), peak_dP_pa=float(dP_sw_all[i]),
-                                 atmospheric_attenuation_db=float(atten_sw_db[i])),
-                 muzzle_blast=dict(t_arrive_s=float(t_mb[i]), range_m=float(r_mb_all[i]),
-                                    positive_phase_t_pos_s=float(t_pos_all[i]),
-                                    peak_dP_pa=float(dP_mb_all[i]),
-                                    atmospheric_attenuation_db=float(atten_mb_db[i])))
-            for i in range(n_mics)
-        ],
-        true_tdoa_sw_us=[float((t_arr[i]-t_arr[0])*1e6) for i in range(1, n_mics)],
-        true_tdoa_mb_us=[float((t_mb[i]-t_mb[0])*1e6) for i in range(1, n_mics)],
-        dt_mb_minus_sw_centroid_s=float(t_mb.mean() - t_arr.mean()),
-    )
-    return ideal_signals, FS, ground_truth
+        mic_pos=mic_pos.tolist(), shooter_pos=shooter.tolist(), bullet_origin=origin.tolist(),
+        trajectory_direction=v_hat.tolist(), bullet_speed_mps=float(M * c), mach=float(M),
+        speed_of_sound_mps=float(c), wind_mps=(wind.tolist() if wind is not None else [0.0, 0.0, 0.0]),
+        sample_rate_hz=FS, atmosphere_applied=atmosphere,
+        models=dict(shockwave="whitham", muzzle_blast="hopkinson_cranz_kinney_graham",
+                    absorption="iso_9613_1_minimum_phase", shock_branch_enabled=bool(shock_on),
+                    mach_threshold=shk["mach_threshold"]),
+        t_master_start_s=float(t0), t_master_end_s=float(t1), n_samples=len(t_master),
+        per_mic=per_mic,
+        true_tdoa_sw_us=[None if (np.isnan(t_sw[i]) or np.isnan(t_sw[0])) else float((t_sw[i] - t_sw[0]) * 1e6)
+                         for i in range(1, n_mics)],
+        true_tdoa_mb_us=[float((t_mb[i] - t_mb[0]) * 1e6) for i in range(1, n_mics)],
+        tdoa_matrix_sw_us=_matrix_us(t_sw), tdoa_matrix_mb_us=_matrix_us(t_mb),
+        dt_mb_minus_sw_centroid_s=(float(np.nanmean(t_mb[active]) - np.nanmean(t_sw[active]))
+                                   if active.any() else None),
+        checks=checks)
+    return signals, FS, ground_truth
 
 
 def write_clean_wav(path, signals, fs):
-    """Float32 PCM, actual Pa values (unnormalized) -- lossless handoff to
-    Stage 2. Most audio tools can play float WAVs; the values just won't be
-    in the usual +-1 convention, which is intentional here."""
     n = min(len(s) for s in signals)
-    data = np.stack([s[:n] for s in signals], axis=1).astype(np.float32)
-    wavfile.write(path, fs, data)
+    wavfile.write(path, fs, np.stack([s[:n] for s in signals], axis=1).astype(np.float32))
+
+
+def _json_default(o):
+    if isinstance(o, np.floating):
+        return float(o)
+    if isinstance(o, np.integer):
+        return int(o)
+    if isinstance(o, np.bool_):
+        return bool(o)
+    if isinstance(o, np.ndarray):
+        return o.tolist()
+    raise TypeError(f"not JSON serialisable: {type(o)}")
 
 
 def main():
-    parser = argparse.ArgumentParser(
-        description="Stage 1: generate the noiseless 4-mic gunshot signal (physics only).")
-    parser.add_argument("config", nargs="?", default="gen_config.ini",
-                         help="Path to .ini config file (default: gen_config.ini)")
-    parser.add_argument("-o", "--output", default=None,
-                         help="Output basename (overrides output.basename in config); "
-                              "produces <output>_clean.wav and <output>_clean.json")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Stage 1: noiseless multichannel gunshot signal.")
+    ap.add_argument("config", nargs="?", default="gen_config.ini")
+    ap.add_argument("-o", "--output", default=None, help="output basename (overrides output.basename)")
+    args = ap.parse_args()
 
     cfg = gp.load_config(args.config)
     if args.output:
         cfg["output"]["basename"] = args.output
+    signals, fs, gt = generate_clean(cfg)
 
-    print(f"[Stage 1] Generating clean signal: caliber={cfg['bullet']['caliber']}, "
-          f"Mach={cfg['bullet']['mach']}, range={cfg['trajectory']['range']} m")
-
-    signals, fs, ground_truth = generate_clean(cfg)
-
-    wav_path = f"{cfg['output']['basename']}_clean.wav"
-    json_path = f"{cfg['output']['basename']}_clean.json"
-
+    base = cfg["output"]["basename"]
+    wav_path, json_path = f"{base}_clean.wav", f"{base}_clean.json"
     write_clean_wav(wav_path, signals, fs)
     with open(json_path, "w") as f:
-        json.dump(dict(
-            generated_at_utc=datetime.now(timezone.utc).isoformat(),
-            stage="clean_signal",
-            wav_file=wav_path,
-            wav_format="float32 PCM, unnormalized Pa units",
-            sample_rate_hz=fs,
-            n_channels=len(signals),
-            n_samples=len(signals[0]),
-            duration_s=len(signals[0])/fs,
-            config_used=cfg,
-            ground_truth=ground_truth,
-        ), f, indent=2)
+        json.dump(dict(generated_at_utc=datetime.now(timezone.utc).isoformat(), stage="clean_signal",
+                       generator="gs_gen_clean_signal.py", wav_file=wav_path,
+                       wav_format="float32 PCM, unnormalized Pa units", sample_rate_hz=fs,
+                       n_channels=len(signals), n_samples=len(signals[0]),
+                       duration_s=len(signals[0]) / fs, config_used=cfg, ground_truth=gt),
+                  f, indent=2, default=_json_default)
 
-    print(f"[Stage 1] Wrote {wav_path}  ({len(signals)} channels, {fs} Hz, "
-          f"{len(signals[0])/fs:.3f} s, noiseless)")
-    print(f"[Stage 1] Wrote {json_path}")
+    ck = gt["checks"]
+    print(f"[Stage 1] Wrote {wav_path} ({len(signals)} ch, {fs} Hz, {len(signals[0]) / fs:.3f} s) and {json_path}")
+    print(f"[Stage 1] shock at {ck['n_sensors_with_shock']}/{ck['n_sensors']} sensors; "
+          f"min(blast - shock) = {ck['min_blast_minus_shock_s']} s; events overlap = {ck['events_overlap_any']}")
+    if len(signals) != 4:
+        print("[Stage 1] NOTE: the noise and ADC stages assume 4 channels.")
     print(f"[Stage 1] Next: python gs_gen_add_noise.py {wav_path} {args.config}")
 
 
