@@ -14,7 +14,7 @@ Implements block 11 of `verilog/fpga_blocks.md` (section 3.3), plus the buffer m
 | `fft2048.v` | Engine: address generation, pipeline, BFP control, FSM |
 | `fft2048_bfly.v` | Radix-2 butterfly: complex multiply, convergent rounding, BFP shift, saturation |
 | `fft2048_twiddle_rom.v` | 1024-entry twiddle ROM (W = cos − j·sin, Q1.17) |
-| `fft_buf_bank.v` | NBUF (default 5) complex buffers, each split into 2 banks; engine port + external port |
+| `fft_buf_bank.v` | NBUF (default 5) complex buffers, each split into 2 banks; engine port + per-buffer client ports (v2) |
 | `fft_sdp_ram.v` | 1024 × 36 simple dual-port RAM (M10K) |
 | `gen_twiddle2048.py` | Generates `tw2048_re.hex`, `tw2048_im.hex` |
 | `tw2048_re.hex`, `tw2048_im.hex` | Twiddle ROM init files (pre-generated) |
@@ -54,17 +54,19 @@ ModelSim / Questa: `python3 gen_twiddle2048.py` then `vsim -c -do do_fft2048.do`
 | `fft_err` | out | 1 | Input contract violated or saturation occurred (valid at `fft_done`) |
 | `mem_*` | out / in | — | Bank-level memory master → `fft_buf_bank` engine port |
 
-### `fft_buf_bank`
+### `fft_buf_bank` (v2)
 
 | Port | Dir | Width | Description |
 |---|---|---|---|
 | `eng_*` | in / out | — | Engine port (connect to `fft2048` `mem_*`) |
-| `ext_en`, `ext_we` | in | 1 | External access strobe, write enable |
-| `ext_sel` | in | 3 | Buffer select |
-| `ext_addr` | in | 11 | Word address |
-| `ext_wdata` | in | 36 | `{re[17:0], im[17:0]}` |
-| `ext_rdata` | out | 36 | Read data, 1 cycle after `ext_addr` |
-| `ext_conflict` | out | 1 | External access to the buffer the engine currently owns |
+| `cl_re[i]` | in | 1 | Client read strobe for buffer i (used for conflict detection) |
+| `cl_raddr[i]` | in | 11 | Client read word address |
+| `cl_rdata[i]` | out | 36 | Read data, 1 cycle after `cl_raddr` |
+| `cl_we[i]` | in | 1 | Client write enable |
+| `cl_waddr[i]`, `cl_wdata[i]` | in | 11, 36 | Client write address / data `{re, im}` |
+| `cl_conflict` | out | 1 | A client touched the buffer the engine currently owns |
+
+Client ports are flattened (buffer i at `[i*W +: W]`) and give 1 read + 1 write per buffer per cycle, so different buffers can be accessed in parallel (e.g. `xspec_phat` reads Z0 and Z1 while writing W0–W2). Which block drives each client port is muxed outside the bank, in `gcc_engine`.
 
 ---
 
@@ -165,5 +167,5 @@ Quartus numbers will differ; check after the first fit.
 ## Integration notes
 
 - **`xspec_phat` scaling:** each packed IFFT input W_p = G_a + j·G_b must have components < 0.5 FS, so scale the unit-magnitude PHAT output to ≤ 0.25 FS.
-- **`xspec_phat` access pattern:** the external port does one access per cycle, and k / N−k pairs can fall in the same bank. Plan for 2 cycles per bin, or add a second external port.
+- **Client ports (v2):** the original single external port was replaced by per-buffer client ports so `xspec_phat` can access Z0, Z1 and W0–W2 in the same cycle. `tb_fft2048.v` was updated accordingly; all results are unchanged and bit-exact.
 - **Timing closure:** if 100 MHz fails, the likely critical path is the butterfly A stage (38-bit add + rounding + saturate). Split it into two registers and add one stage to the control pipeline (v1..v5); the drain grows to 6 cycles (+11 cycles per transform).

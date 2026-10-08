@@ -1,6 +1,6 @@
 // ============================================================
 //  tb_fft2048.v
-//  Self-checking testbench for fft2048 + fft_buf_bank.
+//  Self-checking testbench for fft2048 + fft_buf_bank (v2 client ports).
 //
 //  Tests (each in a different buffer, to exercise the bank mux):
 //    1. DC                 re = 0.25 FS, im = 0                  (buffer 0)
@@ -64,13 +64,15 @@ module tb_fft2048;
     wire [35:0] mem_rdata0, mem_rdata1, mem_wdata0, mem_wdata1;
     wire        mem_we0, mem_we1;
 
-    reg         ext_en    = 1'b0;
-    reg         ext_we    = 1'b0;
-    reg  [2:0]  ext_sel   = 3'd0;
-    reg  [10:0] ext_addr  = 11'd0;
-    reg  [35:0] ext_wdata = 36'd0;
-    wire [35:0] ext_rdata;
-    wire        ext_conflict;
+    // Host access through the bank's client ports (address/data broadcast,
+    // per-buffer strobes)
+    reg  [4:0]   h_re    = 5'd0;
+    reg  [4:0]   h_we    = 5'd0;
+    reg  [10:0]  h_raddr = 11'd0;
+    reg  [10:0]  h_waddr = 11'd0;
+    reg  [35:0]  h_wdata = 36'd0;
+    wire [179:0] cl_rdata;
+    wire         cl_conflict;
 
     fft2048 dut (
         .clk(clk), .rst_n(rst_n),
@@ -92,9 +94,9 @@ module tb_fft2048;
         .eng_we0(mem_we0), .eng_we1(mem_we1),
         .eng_waddr0(mem_waddr0), .eng_waddr1(mem_waddr1),
         .eng_wdata0(mem_wdata0), .eng_wdata1(mem_wdata1),
-        .ext_en(ext_en), .ext_we(ext_we), .ext_sel(ext_sel),
-        .ext_addr(ext_addr), .ext_wdata(ext_wdata), .ext_rdata(ext_rdata),
-        .ext_conflict(ext_conflict)
+        .cl_re(h_re), .cl_raddr({5{h_raddr}}), .cl_rdata(cl_rdata),
+        .cl_we(h_we), .cl_waddr({5{h_waddr}}), .cl_wdata({5{h_wdata}}),
+        .cl_conflict(cl_conflict)
     );
 
     // ------------------------------------------------------------
@@ -175,15 +177,12 @@ module tb_fft2048;
         begin
             for (n = 0; n < N; n = n + 1) begin
                 @(negedge clk);
-                ext_en    = 1'b1;
-                ext_we    = 1'b1;
-                ext_sel   = b;
-                ext_addr  = bitrev11(n);
-                ext_wdata = {s18(xin_re[n]), s18(xin_im[n])};
+                h_we    = 5'd1 << b;
+                h_waddr = bitrev11(n);
+                h_wdata = {s18(xin_re[n]), s18(xin_im[n])};
             end
             @(negedge clk);
-            ext_en = 1'b0;
-            ext_we = 1'b0;
+            h_we = 5'd0;
         end
     endtask
 
@@ -194,14 +193,12 @@ module tb_fft2048;
         begin
             for (k = 0; k < N; k = k + 1) begin
                 @(negedge clk);
-                ext_en   = 1'b1;
-                ext_we   = 1'b0;
-                ext_sel  = b;
-                ext_addr = k;
+                h_re    = 5'd1 << b;
+                h_raddr = k;
                 @(negedge clk);
-                ext_en = 1'b0;
-                xout_re[k] = from_s18(ext_rdata[35:18]);
-                xout_im[k] = from_s18(ext_rdata[17:0]);
+                h_re = 5'd0;
+                xout_re[k] = from_s18(cl_rdata[b*36+18 +: 18]);
+                xout_im[k] = from_s18(cl_rdata[b*36    +: 18]);
             end
         end
     endtask
@@ -392,7 +389,7 @@ module tb_fft2048;
     // Monitor: ext port must never touch the engine's buffer
     // ------------------------------------------------------------
     always @(posedge clk)
-        if (ext_conflict) conflicts = conflicts + 1;
+        if (cl_conflict) conflicts = conflicts + 1;
 
     // ------------------------------------------------------------
     // Main
@@ -403,7 +400,8 @@ module tb_fft2048;
 
     initial begin
         if ($test$plusargs("vcd")) begin
-            $dumpfile("tb_fft2048.vcd");
+            if ($test$plusargs("fst")) $dumpfile("tb_fft2048.fst");   // with vvp -fst
+            else                       $dumpfile("tb_fft2048.vcd");
             $dumpvars(0, tb_fft2048);
         end
 
@@ -556,7 +554,7 @@ module tb_fft2048;
         $display("");
         $display("============================================================");
         test_fails = 0;
-        check(conflicts == 0, "ext port conflict with engine buffer");
+        check(conflicts == 0, "client port conflict with engine buffer");
         fails = fails + test_fails;
         if (fails == 0) $display(" ALL TESTS PASSED");
         else            $display(" %0d CHECK(S) FAILED", fails);

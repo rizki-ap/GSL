@@ -1,7 +1,7 @@
 # fft2048 -- Icarus Verilog flow
 #   make          generate twiddles, simulate, bit-true check
 #   make sim      simulate only
-#   make wave     simulate with VCD dump, open GTKWave
+#   make wave     simulate with waveform dump (tb_fft2048.fst, open in GTKWave)
 #   make model    Python model vs numpy (needs numpy)
 #   make clean
 
@@ -27,13 +27,13 @@ check: sim
 	$(PYTHON) fft2048_model.py check tb_vec_*.txt
 
 wave: tb_fft2048.vvp
-	$(VVP) -n tb_fft2048.vvp +vcd
-	gtkwave tb_fft2048.vcd &
+	$(VVP) -n tb_fft2048.vvp +vcd +fst -fst
+	@echo "Waveform: tb_fft2048.fst  (open with: gtkwave tb_fft2048.fst)"
 
 model:
 	$(PYTHON) fft2048_model.py selftest
 
 clean:
-	rm -f tb_fft2048.vvp tb_fft2048.vcd tb_vec_*.txt
+	rm -f tb_fft2048.vvp tb_fft2048.vcd tb_fft2048.fst tb_vec_*.txt
 
 .PHONY: all sim check wave model clean
