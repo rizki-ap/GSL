@@ -63,9 +63,14 @@ def generate_clean(cfg):
     origin, v_hat = gp.build_trajectory(cfg)
     shooter = origin.copy()
     shock_on = M > max(shk["mach_threshold"], 1.0)
+    drag = bullet.get("drag", "none") == "exponential"
 
     # ---- arrival times ------------------------------------------------------------------
-    geo = [gp.shock_geometry(p, origin, v_hat, M, c, wind) if shock_on else None for p in mic_pos]
+    if drag:
+        geo = [gp.shock_geometry_drag(p, origin, v_hat, M * c, bullet["lam"], c, wind,
+                                      shk["mach_threshold"]) if shock_on else None for p in mic_pos]
+    else:
+        geo = [gp.shock_geometry(p, origin, v_hat, M, c, wind) if shock_on else None for p in mic_pos]
     t_mb = np.zeros(n_mics)
     r_mb = np.zeros(n_mics)
     for i, p in enumerate(mic_pos):
@@ -92,7 +97,8 @@ def generate_clean(cfg):
         sw = np.zeros(len(t_master))
         if shock_on and geo[i]["in_cone"]:
             g = geo[i]
-            dP, T = gp.nwave_params(g["b"], M, c, bullet, shk["amp_scale"], shk["dur_scale"], p_atm)
+            M_e = g["M_emit"] if drag else M          # local Mach at the emission point
+            dP, T = gp.nwave_params(g["b"], M_e, c, bullet, shk["amp_scale"], shk["dur_scale"], p_atm)
             sw = gp.nwave_waveform(t_master, g["t_arrive"], dP, T)
             if atmosphere is not None:
                 sw = gp.spectral_absorption(sw, FS, g["R"], atmosphere)
@@ -114,11 +120,15 @@ def generate_clean(cfg):
         reason = None
         if not shock_on:
             reason = "below_mach_threshold"
+        elif drag and g["subsonic"]:
+            reason = "subsonic_at_emission"
         elif not g["in_cone"]:
             reason = "outside_mach_cone"
         sw_rec = dict(active=reason is None, inactive_reason=reason)
         if g is not None:
             sw_rec.update(along_track_a_m=g["a"], perp_dist_b_m=g["b"], emission_coord_s_m=g["s"])
+        if drag and g is not None and g["M_emit"] is not None:
+            sw_rec.update(mach_emit=float(g["M_emit"]), bullet_speed_emit_mps=float(g["v_emit"]))
         if reason is None:
             sw_rec.update(t_arrive_s=float(t_sw[i]), t_emit_s=float(g["t_emit"]),
                           acoustic_path_R_m=float(g["R"]), duration_T_N_s=float(T_N[i]),
@@ -142,6 +152,10 @@ def generate_clean(cfg):
         trajectory_direction=v_hat.tolist(), bullet_speed_mps=float(M * c), mach=float(M),
         speed_of_sound_mps=float(c), wind_mps=(wind.tolist() if wind is not None else [0.0, 0.0, 0.0]),
         sample_rate_hz=FS, atmosphere_applied=atmosphere,
+        drag_model=bullet.get("drag", "none"),
+        decay_length_m=(float(bullet["lam"]) if drag else None),
+        subsonic_distance_m=(gp.subsonic_distance(M * c, bullet["lam"], max(shk["mach_threshold"], 1.0) * c)
+                             if drag else None),
         models=dict(shockwave="whitham", muzzle_blast="hopkinson_cranz_kinney_graham",
                     absorption="iso_9613_1_minimum_phase", shock_branch_enabled=bool(shock_on),
                     mach_threshold=shk["mach_threshold"]),

@@ -18,8 +18,10 @@ What is modelled
   Geometry              any number of sensors, explicit shooter position and bullet direction.
 
 Assumptions and validity (see the physics audit for the numbers)
-  * straight bullet path at constant speed -- the speed loss of a real bullet shifts arrival
-    times and TDOAs noticeably beyond a few tens of metres
+  * straight bullet path (no gravity drop). Speed is constant by default
+    ([bullet] drag_model = none); drag_model = exponential models the speed loss as
+    v(s) = v0 exp(-s / decay_length) (constant drag coefficient), which shifts arrival times
+    and TDOAs and switches the shockwave off where the bullet is no longer supersonic
   * free field: no ground reflection, no muzzle directivity, no refraction or turbulence
   * wind: uniform; applied to the acoustic path only
   * the N-wave result is a far-field result (the wave must be fully formed)
@@ -54,13 +56,19 @@ WHITHAM_K_T = 1.82
 B_MIN = 0.05            # m, lower bound on b in the N-wave laws (avoids the b -> 0 singularity)
 KG_Z_MAX = 40.0         # m/kg^(1/3), upper end of the published Kinney-Graham range
 
-# Projectiles: d = diameter (m), L = length (m), v0 = nominal muzzle velocity (m/s).
-# Nominal values; override with [bullet] diameter_mm, length_mm, muzzle_velocity_mps.
+# Projectiles: d = diameter (m), L = length (m), v0 = nominal muzzle velocity (m/s),
+# lam = drag decay length (m) for drag_model = exponential: v(s) = v0 exp(-s / lam).
+# Nominal values; override with [bullet] diameter_mm, length_mm, muzzle_velocity_mps,
+# decay_length_m. The decay lengths are APPROXIMATE fits to typical published velocity
+# tables (5.56 ~570 m/s at 500 m, 7.62 ~560 m/s at 500 m, 12.7 ~490 m/s at 1500 m);
+# replace them with values from your own ballistic tables.
 BULLET_LIBRARY = {
-    "5.56_NATO":      dict(d=5.56e-3, L=0.023,  v0=940.0),
-    "7.62_NATO":      dict(d=7.82e-3, L=0.028,  v0=850.0),
-    "9mm_Parabellum": dict(d=9.02e-3, L=0.0155, v0=370.0),
+    "5.56_NATO":      dict(d=5.56e-3,  L=0.023,  v0=940.0, lam=1000.0),
+    "7.62_NATO":      dict(d=7.82e-3,  L=0.028,  v0=850.0, lam=1200.0),
+    "9mm_Parabellum": dict(d=9.02e-3,  L=0.0155, v0=370.0, lam=400.0),
+    "12.7_NATO":      dict(d=12.95e-3, L=0.058,  v0=890.0, lam=2500.0),
 }
+DRAG_MODELS = ("none", "exponential")
 
 
 # ===========================================================================
@@ -79,7 +87,8 @@ DEFAULTS = {
                           "gain_mismatch_pct": "0.0", "offset_mismatch_mv": "0.0",
                           "mismatch_seed": "42"},
     "bullet":      {"caliber": "5.56_NATO", "mach": "2.5", "muzzle_velocity_mps": "0",
-                    "diameter_mm": "0", "length_mm": "0"},
+                    "diameter_mm": "0", "length_mm": "0", "drag_model": "none",
+                    "decay_length_m": "0"},
     "trajectory":  {"mode": "range_miss", "range": "200.0", "y_miss": "10.0",
                     "shooter_pos": "", "direction": "", "azimuth_deg": "0", "elevation_deg": "0"},
     "atmosphere":  {"enabled": "true", "temp_c": "20.0", "humidity_pct": "50.0",
@@ -121,6 +130,8 @@ def _validate_config(cfg):
     b = cfg["bullet"]
     need(b["mach"] >= 0 and b["muzzle_velocity_mps"] >= 0, "bullet.mach and muzzle_velocity_mps must be >= 0")
     need(b["diameter_mm"] >= 0 and b["length_mm"] >= 0, "bullet.diameter_mm and length_mm must be >= 0")
+    need(b["drag_model"] in DRAG_MODELS, f"bullet.drag_model must be one of {DRAG_MODELS}")
+    need(b["decay_length_m"] >= 0, "bullet.decay_length_m must be >= 0")
     t = cfg["trajectory"]
     need(t["mode"] in ("range_miss", "explicit"), "trajectory.mode must be 'range_miss' or 'explicit'")
     if t["mode"] == "explicit":
@@ -198,7 +209,9 @@ def load_config(path):
         "bullet": dict(caliber=cp.get("bullet", "caliber"), mach=cp.getfloat("bullet", "mach"),
                        muzzle_velocity_mps=cp.getfloat("bullet", "muzzle_velocity_mps"),
                        diameter_mm=cp.getfloat("bullet", "diameter_mm"),
-                       length_mm=cp.getfloat("bullet", "length_mm")),
+                       length_mm=cp.getfloat("bullet", "length_mm"),
+                       drag_model=cp.get("bullet", "drag_model").strip().lower(),
+                       decay_length_m=cp.getfloat("bullet", "decay_length_m")),
         "trajectory": dict(mode=cp.get("trajectory", "mode").strip().lower(),
                            range=cp.getfloat("trajectory", "range"), y_miss=cp.getfloat("trajectory", "y_miss"),
                            shooter_pos=opt_vec("trajectory", "shooter_pos"),
@@ -272,7 +285,9 @@ def build_trajectory(cfg):
 
 def resolve_bullet(cfg, c):
     """(bullet parameters dict, Mach number). Speed priority: muzzle_velocity_mps, then mach,
-    then the library's nominal v0. diameter_mm and length_mm override the library."""
+    then the library's nominal v0. diameter_mm and length_mm override the library.
+    The dict also carries 'drag' (drag model) and 'lam' (decay length, m; decay_length_m
+    overrides the library). With drag, the returned Mach is the MUZZLE Mach."""
     name = cfg["bullet"]["caliber"]
     if name not in BULLET_LIBRARY:
         raise ValueError(f"Unknown bullet.caliber '{name}' -- valid: {list(BULLET_LIBRARY)}")
@@ -282,6 +297,9 @@ def resolve_bullet(cfg, c):
         bl["d"] = b["diameter_mm"] * 1e-3
     if b["length_mm"] > 0:
         bl["L"] = b["length_mm"] * 1e-3
+    bl["drag"] = b.get("drag_model", "none")
+    if b.get("decay_length_m", 0) > 0:
+        bl["lam"] = b["decay_length_m"]
     if b["muzzle_velocity_mps"] > 0:
         M = b["muzzle_velocity_mps"] / c
     elif b["mach"] > 0:
@@ -336,6 +354,76 @@ def shock_geometry(sensor_pos, bullet_origin, v_hat, M, c, wind=None):
         if c_eff <= 0.0:
             raise ValueError(f"effective sound speed must be positive (got {c_eff:.4g} m/s)")
     rec.update(R=R, x_emit=x_emit, t_emit=t_emit, c_eff=c_eff, t_arrive=t_emit + R / c_eff)
+    return rec
+
+
+def bullet_speed(s, v0, lam):
+    """Bullet speed (m/s) after s metres of flight, exponential drag: v0 exp(-s / lam)."""
+    return v0 * np.exp(-np.asarray(s, dtype=float) / lam)
+
+
+def bullet_time(s, v0, lam):
+    """Time of flight (s) to s metres, exponential drag: lam (exp(s / lam) - 1) / v0."""
+    return lam * np.expm1(np.asarray(s, dtype=float) / lam) / v0
+
+
+def subsonic_distance(v0, lam, v_min):
+    """Distance (m) along the path where the speed falls to v_min (0 if never above it)."""
+    return float(lam * np.log(v0 / v_min)) if v0 > v_min else 0.0
+
+
+def shock_geometry_drag(sensor_pos, bullet_origin, v_hat, v0, lam, c, wind=None, mach_min=1.0):
+    """Shock arrival for a straight bullet slowing as v(s) = v0 exp(-s / lam).
+
+    The first shock to reach a sensor is emitted at the path point s* that minimises the
+    arrival time  f(s) = t(s) + |x - p(s)| / c  (Fermat). Its stationarity condition is the
+    LOCAL Mach-angle condition  cos(phi) = c / v(s*), phi = angle between the path and the
+    line from p(s*) to the sensor -- the constant-speed formula of shock_geometry is the
+    lam -> infinity limit. f'(s) = 1/v(s) - (a - s)/(c r(s)) increases with s, so the root on
+    [0, a] is unique and found by bisection.
+
+    Same return dict as shock_geometry, plus M_emit (local Mach at s*), v_emit (m/s) and
+    subsonic (True if the bullet is no faster than mach_min * c at s*: no shock).
+    in_cone is False if the sensor is outside the cone or the emission is subsonic."""
+    sensor_pos = np.asarray(sensor_pos, dtype=float)
+    bullet_origin = np.asarray(bullet_origin, dtype=float)
+    v_hat = np.asarray(v_hat, dtype=float)
+    q = sensor_pos - bullet_origin
+    a = float(np.dot(q, v_hat))
+    b = float(np.linalg.norm(q - a * v_hat))
+    rec = dict(a=a, b=b, s=None, beta=None, in_cone=False, R=None, x_emit=None, t_emit=None,
+               t_arrive=None, c_eff=None, M_emit=None, v_emit=None, subsonic=False)
+
+    def fprime(sv):
+        r = np.hypot(a - sv, b)
+        return np.exp(sv / lam) / v0 - (a - sv) / (c * r)
+
+    if a <= 0.0 or fprime(0.0) >= 0.0:          # behind the muzzle or outside the cone
+        return rec
+    lo, hi = 0.0, a                               # fprime(lo) < 0 < fprime(a) = 1/v(a)
+    for _ in range(100):
+        mid = 0.5 * (lo + hi)
+        if fprime(mid) < 0.0:
+            lo = mid
+        else:
+            hi = mid
+    s_e = 0.5 * (lo + hi)
+    v_e = float(bullet_speed(s_e, v0, lam))
+    M_e = v_e / c
+    rec.update(s=s_e, M_emit=M_e, v_emit=v_e)
+    if M_e <= max(mach_min, 1.0):
+        rec["subsonic"] = True
+        return rec
+    R = float(np.hypot(a - s_e, b))
+    x_emit = bullet_origin + s_e * v_hat
+    t_emit = float(bullet_time(s_e, v0, lam))
+    c_eff = float(c)
+    if wind is not None and R > 0:
+        c_eff += float(np.dot(wind, (sensor_pos - x_emit) / R))
+        if c_eff <= 0.0:
+            raise ValueError(f"effective sound speed must be positive (got {c_eff:.4g} m/s)")
+    rec.update(beta=float(np.sqrt(M_e ** 2 - 1.0)), in_cone=True, R=R, x_emit=x_emit,
+               t_emit=t_emit, c_eff=c_eff, t_arrive=t_emit + R / c_eff)
     return rec
 
 

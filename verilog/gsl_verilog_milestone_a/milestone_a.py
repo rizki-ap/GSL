@@ -2,7 +2,9 @@
 """
 milestone_a.py -- Milestone A: GCC-PHAT core (gcc_engine) verification
 
-  python3 milestone_a.py prepare   [--python-dir ../../python]
+  python3 milestone_a.py prepare   [--python-dir <GSL>/python]
+      The generator folder is found automatically by searching upward
+      for python/gs_gen_clean_signal.py; --python-dir overrides it.
       Builds the job set for tb_gcc_engine.v:
         * 4 synthetic jobs (integer-delay noise, plane-wave N-wave,
           plane-wave Friedlander on the MB path, dead mic + band + floor)
@@ -262,13 +264,33 @@ def realistic_jobs(pydir, workdir):
 # ----------------------------------------------------------------------
 # prepare
 # ----------------------------------------------------------------------
+def find_python_dir():
+    """Search upward from this folder for python/gs_gen_clean_signal.py."""
+    d = HERE
+    for _ in range(6):
+        cand = os.path.join(d, 'python')
+        if os.path.isfile(os.path.join(cand, 'gs_gen_clean_signal.py')):
+            return cand
+        d = os.path.dirname(d)
+    return None
+
+
 def prepare(pydir):
     rng = np.random.default_rng(20261008)
     jobs = synthetic_jobs(rng)
-    if os.path.isdir(pydir):
+    if pydir is None:
+        pydir = find_python_dir()
+    if pydir is not None:
+        pydir = os.path.abspath(pydir)
+    if pydir and os.path.isfile(os.path.join(pydir, 'gs_gen_clean_signal.py')):
+        print(f"Generator: {pydir}")
         jobs += realistic_jobs(pydir, os.path.join(HERE, 'gen_work'))
     else:
-        print(f"NOTE: {pydir} not found -- realistic jobs skipped (use --python-dir)")
+        print("=" * 60)
+        print(" WARNING: generator (python/gs_gen_clean_signal.py) not found.")
+        print(" Only the 4 synthetic jobs will run, and 'check' will report")
+        print(" Milestone A as INCOMPLETE. Use --python-dir <GSL>/python.")
+        print("=" * 60)
     meta = []
     with open(os.path.join(HERE, 'ma_jobs.txt'), 'w') as jf:
         jf.write(f"{len(jobs)}\n")
@@ -386,17 +408,27 @@ def check():
         print(f"  -> {'PASS' if ok else 'FAIL'}")
         all_ok &= ok
 
+    n_real = sum(1 for jb in jobs if 'repo_win' in jb)
+    complete = n_real > 0
+    if not all_ok:
+        verdict = 'FAILED'
+    elif complete:
+        verdict = 'PASSED'
+    else:
+        verdict = 'INCOMPLETE (synthetic jobs passed; realistic jobs not run -- generator not found)'
     print("\n============================================================")
-    print(f" Milestone A: {'PASSED' if all_ok else 'FAILED'}  "
-          f"(bit-exact, fixed-point error <= 1 us [worst {worst_fix_all:.3f}], <= 2 ms per job)")
+    print(f" Jobs: {len(jobs)} ({len(jobs) - n_real} synthetic, {n_real} from your generator)")
+    print(f" Milestone A: {verdict}")
+    print(f"   bit-exact, fixed-point error <= 1 us [worst {worst_fix_all:.3f}], <= 2 ms per job")
     print("============================================================")
-    return all_ok
+    return all_ok and complete
 
 
 if __name__ == '__main__':
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument('cmd', choices=['prepare', 'check'])
-    ap.add_argument('--python-dir', default=os.path.join(HERE, '..', '..', 'python'))
+    ap.add_argument('--python-dir', default=None,
+                    help='folder with gs_gen_*.py (default: search upward for python/)')
     a = ap.parse_args()
     if a.cmd == 'prepare':
         prepare(a.python_dir)

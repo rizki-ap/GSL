@@ -1,9 +1,11 @@
-# Gunshot Locator — FPGA Block Specification
+# Gunshot Locator — FPGA Block Specification (v2, as built)
 
-- **Target:** DE10-Standard (Cyclone V SX 5CSXFC6D6F31C6), fabric + HPS
-- **Companion to:** `timing_budget.md` (all budgets here are derived there)
-- **Status:** proposal — port names, register map and descriptor layout are a starting point, not frozen
-- **Version:** 2026-10-08
+- **Target:** DE10-Standard (Cyclone V SX 5CSXFC6D6F31C6), fabric + HPS, or Nios V
+- **Companion to:** `timing_budget.md` (budgets) and `SIMULATION.md` (how to run the checks)
+- **Status:** Milestones A and B built and verified in simulation (Verilator / Icarus), and area-optimised (§5). Blocks marked *planned* are Milestone C or D. Nothing has been through Quartus yet.
+- **Version:** 2026-10-11 (v2 as built and area-optimised; v1, 2026-10-08, was the pre-implementation proposal)
+
+v1 → v2 changes are listed per block under **Changes vs v1**.
 
 ---
 
@@ -11,485 +13,317 @@
 
 | Item | Definition |
 |---|---|
-| Clock | Single domain `clk_sys` = 100 MHz from PLL (50 MHz board oscillator). The LW H2F bridge's FPGA side is also clocked by `clk_sys`. |
-| Reset | `rst_n`, active-low, synchronous to `clk_sys`. Omitted from the port tables. |
-| Strobes | Every `*_valid` / `*_evt` / `*_done` is a 1-cycle pulse. |
-| `s16` / `s18` | 16-bit / 18-bit two's complement. `s18` is Q1.17. |
-| `ts64` | 64-bit sample index at 100 kHz. Every timestamp in the system is a `ts64`, never a clock-cycle count. |
-| Frame | One 4-channel sample set, every 10 µs = 1000 `clk_sys` cycles. |
-| MB frame | One 4-channel decimated sample set, every 50 µs (20 kHz). |
-| Pair order | (0,1) (0,2) (0,3) (1,2) (1,3) (2,3) — must match `gs_det_tdoa.py`. |
-| Lag sign | lag > 0 ⇒ second channel of the pair lags the first — must match `gs_det_tdoa.py`. |
+| Clock | Single domain `clk_sys` = 100 MHz. All blocks are synchronous to it. |
+| Reset | `rst_n`, active-low, asynchronous assert. Omitted from the port tables. |
+| Strobes | Every `*_valid` / `*_done` / `*_evt` is a 1-cycle pulse. |
+| `s16` / `s18` | 16-bit / 18-bit two's complement. Stream samples are s18 with \|x\| < 2^15. |
+| `x_ts` | 64-bit 100 kHz sample index, already corrected for `fe_cond` latency. Every SW-side time is in this base. |
+| `y_idx` / `y_ts` | 20 kHz MB-stream index; `y_ts` is the same sample's time in the 100 kHz base (decimator group delay removed). |
+| Frame | One 4-channel sample every `FRAME_DIV` clocks: 1000 at 100 MHz = 100 kHz. Simulation runs at 250 by default; results are identical. Minimum about 64. |
+| Ring word | 72 bit = `{ch0, ch1, ch2, ch3}`, s18 each, ch0 in the top bits. |
+| Pair order | (0,1) (0,2) (0,3) (1,2) (1,3) (2,3). Lag > 0: second channel lags. Matches `gs_det_tdoa.py`. |
+| Configuration | Ports on `gsl_core` for now (43 values); `csr` will drive them in Milestone C. |
 
 ---
 
 ## 1. Block overview
 
 ```
-Stream (every 10 µs, hard real time):
- adc_if ─┐
- replay_src ─┴─► fe_cond ─┬─► sw_det ─────┐
-                          ├─► sw_ring     │
-                          └─► mb_decim ─┬─► mb_det ─┐
-                                        └─► mb_ring │
-Event (per window, ≤ 2 ms):                         │
- evt_sched ◄────────────────────────────────────────┘
-   └─► gcc_loader ─► fft2048 ⇄ xspec_phat
-                     └─► peak_search ─► result_mbox ─► HPS (LW bridge + IRQ)
-Shared: timebase, csr, raw_dma
+replay_src -> timebase -> fe_cond -+-> sw_ring (cap_ring) ----------------+
+ (adc_if, D)                       +-> sw_det -----------+                 |
+                                   +-> mb_decim -+-> mb_ring (cap_ring) ---+
+                                                 +-> mb_det -+             |
+                                 sw_det / mb_det -> evt_sched -> gcc_engine (loader, fft2048,
+                                                                 xspec_phat, peak_search)
+                                                              -> result_mbox (C) -> processor
 ```
 
-| # | Block | Class | Throughput | Latency / deadline | Key spec |
-|---|---|---|---|---|---|
-| 1 | `adc_if` | stream | 4 ch / 10 µs | ≤ 5 µs CONVST → data | one CONVST for all channels |
-| 2 | `replay_src` | stream | 4 ch / 10 µs | same cadence as ADC | bit-exact replay of Python WAVs |
-| 3 | `timebase` | stream | 1 / frame | 0 | 64-bit, never wraps |
-| 4 | `fe_cond` | stream | 4 ch / 10 µs | constant ≤ 0.5 ms | delay trim 1/128 sample |
-| 5 | `sw_det` | stream | 4 ch / 10 µs | trigger ≤ 0.5 ms | onset ±1 sample |
-| 6 | `mb_decim` | stream | 4 ch / 10 µs in | constant ≤ 0.31 ms | ÷ 5, linear phase |
-| 7 | `mb_det` | stream | 4 ch / 50 µs | trigger ≤ 1 ms | onset ≤ 0.4 ms error |
-| 8 | `sw_ring` / `mb_ring` | stream | 1 write / frame | read deadline 23 / 119 ms | 4096 deep |
-| 9 | `evt_sched` | event | ≥ 1 job / 33 ms | dispatch ≤ 10 cycles | queue ≥ 4 |
-| 10 | `gcc_loader` | event | — | ≤ 4,096 cycles | shared-reference window |
-| 11 | `fft2048` | event | — | ≤ 15,360 cycles / transform | BFP, ≤ 1 µs TDOA error |
-| 12 | `xspec_phat` | event | — | ≤ 6,200 cycles | rsqrt error ≤ 2⁻¹² |
-| 13 | `peak_search` | event | — | ≤ 1,206 cycles | ± max_lag only |
-| 14 | `result_mbox` | event | — | IRQ ≤ 1 µs after write | 8 slots, never overwrite unread |
-| 15 | `csr` | infra | — | applied at frame boundary | atomic 64-bit reads |
-| 16 | `raw_dma` | infra | 800 kB/s | FIFO ≥ 1.28 ms | optional |
-
-Per-job engine total (blocks 10–13): ≈ 88k cycles = 0.88 ms, budget 2 ms.
+| # | Block | Folder | Status | Per-sample / per-job cost (measured) |
+|---|---|---|---|---|
+| 1 | `adc_if` | — | planned (D) | — |
+| 2 | `replay_src` | `stream/` | built, verified (B) | 1 pop per frame |
+| 3 | `timebase` | `stream/` | built (B); PPS planned (D) | — |
+| 4 | `fe_cond` | `stream/` | built, verified (B) | 49 of 1000 cycles per frame; latency 4 samples |
+| 5 | `sw_det` | `stream/` | built, verified (B) | 6 cycles per frame (+4 per noise block) |
+| 6 | `mb_decim` | `stream/` | built, verified (B) | 263 cycles per 5 frames; delay 31 samples |
+| 7 | `mb_det` | `stream/` | built, verified (B) | 9 cycles per 5 frames (+32 scan, +12 thresholds) |
+| 8 | `cap_ring` ×2 | `gcc_engine/` | built, verified (A, B) | 1 write per frame / per 5 frames |
+| 9 | `evt_sched` | `stream/` | built, verified (B) | every cycle |
+| 10 | `gcc_loader` | `gcc_engine/` | built, verified (A, B) | 2,052 cycles per job |
+| 11 | `fft2048` | `fft2048/` | built, verified (A) | 11,321 cycles per transform |
+| 12 | `xspec_phat` | `xspec_phat/` | built, verified (A) | 6,167 cycles per job |
+| 13 | `peak_search` | `gcc_engine/` | built, verified (A, B) | 406 (SW) / 86 (MB) cycles per job |
+| — | `gcc_engine` | `gcc_engine/` | built, verified (A, B) | 65,239 (SW) / 64,919 (MB) cycles = 0.65 ms per job |
+| — | `gsl_core` | `stream/` | built, verified (B) | Milestone B top |
+| 14 | `result_mbox` | — | planned (C) | — |
+| 15 | `csr` | — | planned (C) | — |
+| 16 | `raw_dma` | — | planned (C, optional) | — |
 
 ---
 
 ## 2. Stream-rate blocks
 
-These run every frame and may never stall. A missed frame is a hard error.
+### 2.1 `adc_if` — AD7606B controller *(planned, Milestone D)*
 
-### 2.1 `adc_if` — AD7606B controller
+Unchanged from v1: one CONVST per frame from a free-running divider, readout ≤ 5 µs, all 4 channels from one conversion, `adc_err` on BUSY timeout. In Milestone B its role is played by `replay_src`, which already has the ADC pass-through port (`adc_valid`, `adc_data`). In Milestone D the frame cadence moves from `replay_src` to `adc_if`.
+
+### 2.2 `replay_src` *(built)*
 
 | Port | Dir | Width | Description |
 |---|---|---|---|
-| `adc_convst` | out (pin) | 1 | Conversion start, rising edge once per frame |
-| `adc_cs_n` | out (pin) | 1 | Chip select |
-| `adc_sclk` | out (pin) | 1 | Serial clock, 25 MHz (`clk_sys` / 4) |
-| `adc_reset` | out (pin) | 1 | Power-up reset pulse |
-| `adc_busy` | in (pin) | 1 | Conversion in progress (2-FF synchronised) |
-| `adc_dout` | in (pin) | 1–2 | Serial data line(s) |
-| `frame_tick` | out | 1 | Strobe at each CONVST; master cadence for the whole design |
-| `adc_ch0..3` | out | s16 | One sample per channel |
-| `adc_valid` | out | 1 | Strobe when all 4 channels are read |
-| `adc_err` | out | 1 | BUSY timeout or framing error (sticky in `csr`) |
+| `run` | in | 1 | Enables the frame cadence |
+| `src_sel` | in | 1 | 1 = replay FIFO, 0 = ADC pass-through |
+| `rp_wr_en`, `rp_wr_data` | in | 1, 64 | Frame writes from the host, `{ch0..ch3}` s16 |
+| `rp_level`, `rp_full` | out | 11, 1 | FIFO fill level |
+| `adc_valid`, `adc_data` | in | 1, 64 | Live ADC frames (Milestone D) |
+| `frame_tick` | out | 1 | Cadence strobe, every `FRAME_DIV` clocks while `run` |
+| `src_valid`, `src_data` | out | 1, 64 | Frame to `fe_cond` |
+| `rp_underflow` | out | 1 | Sticky: a tick found the FIFO empty (timeline broken) |
 
 | Parameter | Value |
 |---|---|
-| Frame period | exactly 1000 cycles = 10.000 µs, from a free-running counter, never stalled |
-| Inter-channel skew | single CONVST for all 4 channels; skew = ADC aperture matching (ns) |
-| BUSY timeout | `adc_err` if BUSY is not low within datasheet t_CONV(max) |
-| Readout | e.g. 64 SCLK at 25 MHz ≈ 2.6 µs on one DOUT line |
-| CONVST → `adc_valid` | ≤ 5 µs |
+| FIFO | 1024 frames (10 ms at 100 kHz) |
+| Cadence | `FRAME_DIV` clocks (parameter; 1000 = 100 kHz at 100 MHz) |
 
-Check the AD7606B serial-mode section for DOUT line count and which channels appear on which line before fixing the pin map.
+**Changes vs v1:** FIFO 1024 frames (v1 ≥ 200); the frame cadence is generated here until `adc_if` exists.
 
-### 2.2 `replay_src` — test-vector source (strongly recommended)
+### 2.3 `timebase` *(built)*
 
-| Port | Dir | Width | Description |
-|---|---|---|---|
-| `rp_wr_data` | in | 64 | One frame (4 × s16) from the HPS (Avalon-MM write or F2SDRAM read master) |
-| `rp_wr_en` | in | 1 | FIFO write |
-| `rp_fifo_lvl` | out | 12 | FIFO fill level, to `csr` |
-| `frame_tick` | in | 1 | Cadence from `adc_if` |
-| `src_sel` | in | 1 | 0 = ADC, 1 = replay (from `csr`) |
-| `adc_ch0..3`, `adc_valid` | in | s16, 1 | Live ADC stream |
-| `src_ch0..3` | out | s16 | Muxed stream into `fe_cond` |
-| `src_valid` | out | 1 | Muxed valid |
-| `rp_underflow` | out | 1 | Sticky, to `csr` |
+64-bit frame index `ts64`; `src_ts` (valid with `src_valid`) carries the index of the frame being delivered. `ts_clear` resets it. PPS latching (`pps_ts`, `pps_frac`) is planned for Milestone D.
 
-| Parameter | Value |
-|---|---|
-| Cadence | Identical to the ADC (driven by `frame_tick`), so downstream blocks cannot tell the difference |
-| FIFO depth | ≥ 200 frames (2 ms) |
-| Purpose | Play `gs_gen_apply_adc.py` output through the FPGA and compare against `gs_det_*.py` bit-for-bit |
+### 2.4 `fe_cond` *(built)*
 
-### 2.3 `timebase`
+Per channel: `a = x + offset` → `g = sat18(round(a·gain, 14))` → 9-tap fractional-delay FIR (Q1.16) → DC blocker → output.
 
 | Port | Dir | Width | Description |
 |---|---|---|---|
-| `src_valid` | in | 1 | Frame strobe |
-| `pps_in` | in (pin) | 1 | Optional GNSS PPS (2-FF synchronised) |
-| `ts64` | out | 64 | Sample index, increments on `src_valid` |
-| `pps_ts` | out | 64 | `ts64` latched at each PPS rising edge |
-| `pps_frac` | out | 10 | Cycles since last frame at the PPS edge (10 ns resolution) |
-| `pps_valid` | out | 1 | Strobe |
-
-| Parameter | Value |
-|---|---|
-| Increment | Same cycle as `src_valid` |
-| Wrap | Never in practice (2⁶⁴ samples ≈ 5.8 × 10⁶ years) |
-| Clear | Only on reset or `CTRL.ts_clear` |
-
-### 2.4 `fe_cond` — DC block, gain, offset, fractional-delay trim
-
-| Port | Dir | Width | Description |
-|---|---|---|---|
-| `src_ch0..3`, `src_valid` | in | s16, 1 | Raw frame |
-| `ts64` | in | 64 | Current sample index |
-| `cfg_gain[0..3]` | in | 16 | Q2.14 per-channel gain |
-| `cfg_offset[0..3]` | in | s16 | Per-channel offset |
-| `cfg_dtrim[0..3]` | in | s9 | Fractional delay in 1/128-sample units |
+| `src_valid`, `src_data`, `src_ts` | in | 1, 64, 64 | Frame in |
+| `cfg_gain` | in | 4 × 16 | Q2.14, 16384 = 1.0 |
+| `cfg_offset` | in | 4 × s16 | |
+| `cfg_dtrim` | in | 4 × s9 | Fractional delay, 1/128 sample, −128 … +128 |
 | `cfg_dcblk_en` | in | 1 | DC blocker enable |
-| `x_ch0..3` | out | s18 | Conditioned samples |
-| `x_valid` | out | 1 | Strobe |
-| `x_ts` | out | 64 | `ts64` of the input sample this output corresponds to (latency-corrected) |
-| `lat_fe` | out | 16 | Constant latency in samples, to `csr` |
+| `x_valid`, `x_data`, `x_ts` | out | 1, 72, 64 | `x_ts = src_ts − 4` |
 
 | Parameter | Value |
 |---|---|
-| Latency | Constant, identical on all 4 channels, ≤ 50 samples (0.5 ms) |
-| DC blocker | 1st-order IIR, corner ≤ 2 Hz, identical coefficients on all channels |
-| Delay trim | ± 1 sample used, step 1/128 sample = 0.078 µs (8-tap × 128-phase polyphase, or cubic Farrow) |
-| Order | offset → gain → delay trim → DC block; saturate to s18 |
-| Compute | ≤ 250 MAC / channel / frame (one time-shared DSP) |
+| Latency | 4 samples, identical on all channels; `x_ts` already corrected |
+| Delay trim | dtrim = 0 is an exact unit impulse (transparent); error ≤ 0.025 sample (0.25 µs) below 20 kHz |
+| DC blocker | Shift-only, `acc += ((y − y_prev) << 13) − (acc >>> 13)`; corner 1.94 Hz |
+| Rounding | Convergent (round-half-to-even) |
+| Timing | Sequential over channels: 4 × 12 + 1 = 49 cycles per frame |
+| ROM | `fe_fdelay.hex`: 129 phases × 9 taps; negative trims use mirrored taps |
 
-Digital filters are identical across channels, so they cost no TDOA budget; only `dtrim` changes relative timing. `dtrim` is the calibration knob for AFE mismatch and, if the onboard multiplexed ADC is kept, its channel skew.
+**Changes vs v1:** 9 taps (v1 8); the coefficient ROM has 2-cycle latency (a 1-sample bug from assuming 1 cycle was caught by the bit-exact check and fixed).
 
-### 2.5 `sw_det` — shockwave onset detector
+### 2.5 `sw_det` *(built; substantially extended)*
 
 | Port | Dir | Width | Description |
 |---|---|---|---|
-| `x_ch0..3`, `x_valid`, `x_ts` | in | s18, 1, 64 | Conditioned stream |
-| `cfg_thr_mult` | in | 8 | Threshold multiplier (default 10 = `sw_threshold_mult`) |
-| `cfg_noise_win` | in | 12 | Noise-floor window, samples (default 500 = 5 ms) |
-| `cfg_sta_win` | in | 6 | Short-term window, samples (default 10 = 0.1 ms) |
-| `cfg_holdoff` | in | 16 | Re-trigger holdoff, samples (default 2000 = 20 ms) |
-| `cfg_tn_max` | in | 8 | Feature window, samples (default 150 = 1.5 ms) |
-| `cfg_dt_min` | in | 16 | MB blanking after SW, samples (default 1000 = 10 ms) |
-| `sw_evt` | out | 1 | Onset strobe |
-| `sw_ts` | out | 64 | `x_ts` of first threshold crossing |
-| `sw_ref_ch` | out | 2 | First channel to cross |
-| `sw_pk_pos[0..3]` | out | s18 | Positive peak per channel |
-| `sw_pk_neg[0..3]` | out | s18 | Negative peak per channel |
-| `sw_tn[0..3]` | out | 8 | N-wave duration (positive-to-negative peak spacing), samples |
-| `sw_feat_valid` | out | 1 | Strobe when features are complete |
-| `sw_blank` | out | 1 | Level, high for `cfg_dt_min` after each `sw_evt` (to `mb_det`) |
+| `x_valid`, `x_data`, `x_ts` | in | 1, 72, 64 | Conditioned stream |
+| `cfg_thr_mult2` | in | 16 | Candidate threshold (mult²): 100 = 10× noise RMS |
+| `cfg_noise_min` | in | 32 | Minimum noise mean square, LSB² (default 16) |
+| `cfg_holdoff`, `cfg_dt_min` | in | 16, 16 | Samples: 2000 (20 ms), 1000 (10 ms MB blanking) |
+| `cfg_feat_win` | in | 9 | Feature window, samples (256), > 100 |
+| `cfg_sym` | in | 8 | N-wave symmetry, 1/64 units (32 = 0.5) |
+| `cfg_tn_max` | in | 8 | Max N-wave duration, samples (60 = 0.6 ms) |
+| `cfg_pk_mult` | in | 8 | Peak margin over threshold, power ratio (9 = 3×) |
+| `rec_valid`, `rec_ts`, `rec_ref` | out | 1, 64, 2 | SW record (end of feature window) |
+| `rec_feat` | out | 4 × 54 | Per channel `{pk_pos, pos_off, pk_neg, neg_off}` |
+| `conf_valid`, `conf_ts` | out | 1, 64 | SW confirmed (1 ms after onset) |
+| `sw_qual` | out | 1 | Level: a candidate is being qualified |
+| `sw_blank` | out | 1 | Level: `cfg_dt_min` samples after a confirmed SW |
+| `noise_valid` | out | 1 | First clean noise block seen |
+
+Behaviour:
+- **Noise floor:** mean square per channel over 512-sample blocks, accepted only if the block had no candidate, qualification or holdoff.
+- **Candidate:** a rising crossing of x² > `thr_mult2 × max(noise, noise_min)` on any channel. `rec_ts` is the crossing sample; `rec_ref` is the lowest channel that crossed.
+- **Qualification (1 ms, ref channel):** with P = max(max x, 0) and Q = max(−min x, 0), it is a shockwave only if all three hold:
+  - **Symmetry:** 64·min(P, Q) ≥ `cfg_sym`·max(P, Q)
+  - **Duration:** |offset(min) − offset(max)| ≤ `cfg_tn_max`
+  - **Margin:** max(P, Q)² ≥ `cfg_pk_mult`·threshold
+- **Rejected candidate** (typically the muzzle blast itself): no record, no holdoff, no blanking.
+
+**Changes vs v1:**
+- **Qualification added.** Without it the detector fires on muzzle blasts. A front-steepness test was tried first and failed below 50 m.
+- **New ports:** `conf_valid` / `conf_ts` and `sw_qual`.
+- **`noise_min`:** needed because the generator's ADC noise is below 1 LSB.
+- **Blanking** now starts at confirmation.
+
+### 2.6 `mb_decim` *(built)*
+
+| Port | Dir | Width | Description |
+|---|---|---|---|
+| `x_valid`, `x_data`, `x_ts` | in | 1, 72, 64 | 100 kHz stream |
+| `y_valid`, `y_data` | out | 1, 72 | 20 kHz stream |
+| `y_ts` | out | 64 | Filter-centre time: newest `x_ts` − 31 |
+| `y_idx` | out | 32 | Output index (mb_ring address) |
 
 | Parameter | Value |
 |---|---|
-| Statistic | Short-term amplitude over `sta_win` vs noise floor over `noise_win`, any channel |
-| Onset timestamp | First crossing on `sw_ref_ch`, 1-sample (10 µs) resolution |
-| Trigger latency | ≤ 50 samples (0.5 ms) after onset |
-| Feature latency | `sw_feat_valid` ≤ 2 ms after onset |
-| Holdoff | ≤ 20 ms (must stay below the 66.7 ms burst interval) |
-| Noise floor | Frozen from onset to end of holdoff |
-| Event rate | ≥ 1 per 66.7 ms sustained |
+| Filter | 63-tap linear phase (Kaiser β 6, fc 7 kHz), Q1.17, DC gain exactly 1 (`decim63.hex`) |
+| Response | 0.02 dB ripple to 4 kHz; < −71 dB from 16 kHz (spec 0.1 dB / −60 dB) |
+| Output | Every 5th input, once 63 inputs have been seen |
+| Timing | One multiply-accumulator, channels in sequence: 263 cycles per output; 128-slot history |
 
-### 2.6 `mb_decim` — ÷ 5 decimator for the muzzle-blast path
+### 2.7 `mb_det` *(built; extended)*
 
 | Port | Dir | Width | Description |
 |---|---|---|---|
-| `x_ch0..3`, `x_valid`, `x_ts` | in | s18, 1, 64 | 100 kHz stream |
-| `y_ch0..3` | out | s18 | 20 kHz stream |
-| `y_valid` | out | 1 | Strobe, once per 5 frames |
-| `y_ts` | out | 64 | Timestamp in 100 kHz units, corrected for group delay |
-| `y_idx` | out | 32 | 20 kHz sample index (ring addressing) |
-| `lat_dec` | out | 8 | Group delay in 100 kHz samples, to `csr` |
+| `y_valid`, `y_data`, `y_ts`, `y_idx` | in | 1, 72, 64, 32 | Decimated stream |
+| `sw_blank`, `sw_qual`, `sw_conf` | in | 1 | From `sw_det` |
+| `cfg_thr_mult`, `cfg_settle_mult` | in | 8, 8 | Energy ratios: 20, 9 (= 3× RMS) |
+| `cfg_dwell`, `cfg_holdoff`, `cfg_settle_timeout` | in | 16 each | 20 kHz samples: 100 (5 ms), 400 (20 ms), 4000 (200 ms) |
+| `cfg_noise_min` | in | 32 | LSB² |
+| `rec_valid`, `rec_ts`, `rec_idx`, `rec_ref` | out | 1, 64, 32, 2 | MB record |
+| `rec_reliable` | out | 1 | Armed by settling (0 = armed by timeout) |
 
-| Parameter | Value |
-|---|---|
-| Filter | Symmetric (linear-phase) FIR, ≤ 63 taps, polyphase |
-| Passband | 0–4 kHz, ripple ≤ 0.1 dB |
-| Stopband | ≥ 16 kHz, ≥ 60 dB |
-| Group delay | (N_taps − 1)/2 ≤ 31 samples = 0.31 ms, constant, removed in `y_ts` |
-| Compute | ≈ 13 MAC / input sample / channel |
+Behaviour:
+- **Energy:** 16-sample sliding energy per channel. Trigger when E > `thr_mult`·16·noise on any channel (rising edge) while armed.
+- **Arming is latched:** once all channels have been quiet (E < `settle_mult`·16·noise) for `dwell` samples, the detector stays armed until it triggers or a new SW blanking starts.
+- **Held events:** a trigger while `sw_qual` is high is held. If `sw_conf` follows, it is dropped together with its holdoff (it was the shockwave's own energy). Otherwise it is released.
+- **Onset:** the oldest sample in the 16-sample window whose square exceeds `thr_mult`·noise; `rec_ts = y_ts − 5·back`.
+- **Continuous operation:** SW↔MB pairing and the `dt_max` timeout are done by the processor.
 
-Correcting `y_ts` here means MB and SW timestamps compare directly when forming Δt (budget ≤ 0.5 ms).
+**Changes vs v1:**
+- **Latched arming:** without it, 1 of 8 burst blasts was missed.
+- **Held events:** needed because SW qualification takes 1 ms.
+- **`settle_timeout` / `rec_reliable`** added.
 
-### 2.7 `mb_det` — muzzle-blast onset detector
+### 2.8 `cap_ring` (`sw_ring`, `mb_ring`) *(built)*
 
-| Port | Dir | Width | Description |
-|---|---|---|---|
-| `y_ch0..3`, `y_valid`, `y_ts`, `y_idx` | in | s18, 1, 64, 32 | Decimated stream |
-| `sw_blank` | in | 1 | Blanking from `sw_det` |
-| `cfg_thr_mult` | in | 8 | Default 20 (`mb_energy_threshold_mult`) |
-| `cfg_noise_win` | in | 12 | Noise-floor window, 20 kHz samples |
-| `cfg_sta_win` | in | 6 | Short-term window (default 20 = 1 ms) |
-| `cfg_settle_mult` | in | 8 | Settling threshold relative to noise floor |
-| `cfg_holdoff` | in | 16 | Re-trigger holdoff |
-| `mb_evt` | out | 1 | Onset strobe |
-| `mb_ts` | out | 64 | Onset, 100 kHz units |
-| `mb_idx` | out | 32 | Onset, 20 kHz index (for `mb_ring`) |
-| `mb_ref_ch` | out | 2 | First channel to cross |
-| `mb_reliable` | out | 1 | Low if MB arrived before post-SW energy settled |
-
-| Parameter | Value |
-|---|---|
-| Statistic | Short-term energy vs adaptive noise floor |
-| Arming | After each SW: wait for `sw_blank` low **and** energy to settle within `settle_mult` × floor (`project.md`, limitation 5) |
-| Onset accuracy | ≤ 0.4 ms (≤ 8 samples at 20 kHz); back-track from the crossing to the start of the energy rise |
-| Trigger latency | ≤ 1 ms (20 samples) after onset |
-| Mode | Continuous; SW↔MB pairing and the 5 s timeout live on the HPS |
-
-### 2.8 `sw_ring` / `mb_ring` — capture rings
-
-| Port | Dir | Width | Description |
-|---|---|---|---|
-| `wr_data` | in | 72 | 4 × s18 |
-| `wr_en` | in | 1 | `x_valid` (SW) / `y_valid` (MB) |
-| `wr_addr` | in | 12 | `x_ts[11:0]` (SW) / `y_idx[11:0]` (MB) |
-| `rd_addr` | in | 12 | From `gcc_loader` |
-| `rd_data` | out | 72 | 4 × s18, 2-cycle read latency |
-
-| Parameter | `sw_ring` | `mb_ring` |
-|---|---|---|
-| Rate | 100 kHz | 20 kHz |
-| Depth | 4096 (41 ms) | 4096 (205 ms) |
-| Window | 300 pre + 1500 post | 120 pre + 1600 post |
-| Read deadline after window closes | 2296 samples = 23 ms | 2376 samples = 119 ms |
-| M10K | ≈ 32 | ≈ 32 |
-
-Writes never stall. Overlapping events are just different start addresses into the same ring.
+4096 × 72-bit dual-port RAM, 2-cycle read latency. `sw_ring` is written at `x_ts[11:0]` (41 ms of history), `mb_ring` at `y_idx[11:0]` (205 ms). Writes never stall; `evt_sched` enforces the read deadline.
 
 ---
 
 ## 3. Event-rate blocks
 
-One shared engine processes one job (one SW or one MB window) at a time. Budget per job: 2 ms.
-
-### 3.1 `evt_sched` — job scheduler
+### 3.1 `evt_sched` *(built; extended)*
 
 | Port | Dir | Width | Description |
 |---|---|---|---|
-| `sw_evt`, `sw_ts`, `sw_ref_ch` | in | 1, 64, 2 | SW onset |
-| `sw_pk_*`, `sw_tn`, `sw_feat_valid` | in | — | SW features (latched into job metadata) |
-| `mb_evt`, `mb_ts`, `mb_idx`, `mb_ref_ch`, `mb_reliable` | in | — | MB onset |
-| `x_ts`, `y_idx` | in | 64, 32 | Current write positions |
-| `eng_busy` | in | 1 | Engine occupied |
-| `job_valid` | out | 1 | Dispatch strobe |
-| `job_type` | out | 1 | 0 = SW, 1 = MB |
-| `job_id` | out | 16 | Incrementing ID |
-| `job_start` | out | 12 | Ring address of window start (onset − pre) |
-| `job_len` | out | 11 | 1800 (SW) / 1720 (MB) |
-| `job_maxlag` | out | 7 | 100 (SW) / 20 (MB) |
-| `job_meta` | out | — | ts, ref_ch, features, reliable flag → `result_mbox` |
+| `x_valid`, `x_ts`, `y_valid`, `y_idx` | in | — | Last written ring positions |
+| `sw_rec_*`, `sw_conf_*`, `mb_rec_*` | in | — | Detector records |
+| `cfg_{sw,mb}_{pre,len,maxlag}` | in | 12, 12, 7 | Windows: SW 300 / 1800 / 100, MB 120 / 1720 / 20 |
+| `cfg_mb_mask_pre/post` | in | 8, 8 | SW masked in MB windows, 20 kHz samples: 20 / 60 (−1 … +3 ms) |
+| `cfg_sw_mask_pre/post` | in | 16, 16 | Later MB masked in SW windows, 100 kHz samples: 100 / 2000 |
+| `job_valid`, `job_ready` | out / in | 1 | Engine handshake |
+| `job_type`, `job_id`, `job_start`, `job_len`, `job_maxlag` | out | — | Job |
+| `job_ts0`, `job_mask_en`, `job_mask_lo`, `job_mask_hi` | out | 32, 4, 4 × 32, 4 × 32 | Window time base and mask intervals |
+| `sw_id`, `mb_id` | out | 16 | Event id for the record valid this cycle |
+| `late_valid`, `late_id`, `late_cnt`, `ovf_cnt` | out | — | Health |
+| `busy` | out | 1 | Anything pending |
 
-| Parameter | Value |
-|---|---|
-| SW release | when `x_ts` ≥ `sw_ts` + 1500 |
-| MB release | when `y_idx` ≥ `mb_idx` + 1600 |
-| Queue | ≥ 4 jobs, FIFO |
-| Dispatch | ≤ 10 cycles after release when engine idle |
-| Deadline | Start ≤ 23 ms (SW) / 119 ms (MB) after release, else drop and set `job_late` |
-| Overflow | Sticky counter in `csr` |
+Behaviour:
+- **Event ids:** one counter shared by SW and MB, assigned on record arrival (SW first if simultaneous).
+- **Pending FIFOs:** SW and MB, 4 entries each. Release happens once the last window sample is written to the ring.
+- **Job queue:** 4 entries (v1: 8; occupancy never exceeds 1).
+- **Dispatch deadline:** a job is dropped and counted as late if its window start could be overwritten during the load: `last − start ≥ 4096 − 16`.
+- **SW masks in MB windows:** at MB release, every remembered SW onset (last 4) whose −1 … +3 ms interval overlaps the window.
+- **MB masks in SW windows:** at SW release, every remembered MB onset (last 4) that lies after the SW onset and overlaps the window.
 
-### 3.2 `gcc_loader` — window loader
+**Changes vs v1:**
+- **Masks** replace v1's "trim the MB window to 40 ms" idea, which can't work at 200 m: the next shockwave lands 9.5 ms after the blast.
+- **Event ids** are assigned here.
+- **Mask outputs** added.
 
-| Port | Dir | Width | Description |
-|---|---|---|---|
-| `job_*` | in | — | From `evt_sched` |
-| `sw_rd_addr` / `mb_rd_addr` | out | 12 | Ring read address |
-| `sw_rd_data` / `mb_rd_data` | in | 72 | Ring read data |
-| `z0_wr_*`, `z1_wr_*` | out | 11 addr, 36 data | Write ports of FFT buffers Z0, Z1 |
-| `ld_done` | out | 1 | Strobe |
+### 3.2 `gcc_loader` *(built)*
 
-| Parameter | Value |
-|---|---|
-| Windowing | **Same start address for all 4 channels** (shared reference, `project.md` limitation 3) |
-| Packing | Z0 = ch0 + j·ch1, Z1 = ch2 + j·ch3 |
-| Length | `job_len` samples, zero-filled to 2048 |
-| Taper | Optional (CSR), default matches `gs_det_tdoa.py` |
-| Cycles | ≤ 4,096 (41 µs) |
-| Optimisation | Writing in bit-reversed address order removes the FFT's 2N bit-reverse pass (≈ 27 % fewer cycles) |
+Ring → Z0 = ch0 + j·ch1, Z1 = ch2 + j·ch3 at bit-reversed addresses, zero-padded to 2048. All 4 channels come from the same ring address. Mask inputs `ld_ts0`, `ld_step` (1 SW, 5 MB) and 4 intervals: window sample n is zeroed on all channels if `ts0 + n·step` lies inside an enabled interval. **2,052 cycles.**
 
-### 3.3 `fft2048` — FFT / IFFT engine
+### 3.3 `fft2048` *(built)*
 
-| Port | Dir | Width | Description |
-|---|---|---|---|
-| `fft_start` | in | 1 | Strobe |
-| `fft_inverse` | in | 1 | 0 = FFT, 1 = IFFT |
-| `fft_buf_sel` | in | 3 | Buffer: Z0, Z1, W0, W1, W2 |
-| buffer ports | in/out | 11 addr, 36 data | 2 reads + 2 writes per cycle (true dual-port) |
-| `fft_done` | out | 1 | Strobe |
-| `fft_bfp_exp` | out | 5 | Total right shifts applied |
+Radix-2 DIT, in place, s18 data and twiddles, block-floating-point. Input bit-reversed, output natural. Input contract \|x\| < 0.5 FS. IFFT via re/im swap. **11,321 cycles per transform.** Full interface: `fft2048/readme.md`.
 
-| Parameter | Value |
-|---|---|
-| Size | 2048, radix-2 DIT, in place |
-| Data / twiddles | s18 complex / 18-bit |
-| Scaling | Block-floating-point (shift a stage only when overflow is possible), total in `fft_bfp_exp` |
-| Cycles | ≤ 15,360 per transform (2N + N/2·log₂N); ≤ 11,264 with bit-reversed input |
-| Per job | 2 forward + 3 inverse ≤ 76,800 cycles |
-| IFFT scaling | No 1/N: only argmax and relative values are used downstream |
-| Accuracy | ≤ 1 µs TDOA error (95 %) vs double precision on the replay test set |
+### 3.4 `xspec_phat` *(built)*
 
-Buffers: 5 × 2048 × 36 bit (Z0, Z1, W0, W1, W2) ≈ 40 M10K.
+Unpack, 6 cross-spectra G_ab = X_b·conj(X_a), PHAT normalisation to magnitude 32767 (rsqrt ROM, phase exact), band mask, `cfg_floor`, packed IFFT inputs. **6,167 cycles.** Full interface: `xspec_phat/readme.md`.
 
-### 3.4 `xspec_phat` — unpack, cross-spectrum, PHAT, IFFT packing
+### 3.5 `peak_search` *(built)*
 
-| Port | Dir | Width | Description |
-|---|---|---|---|
-| `xp_start` | in | 1 | Strobe |
-| `z0_rd_*`, `z1_rd_*` | in/out | 11 addr, 36 data | Two reads per cycle: bins k and N−k |
-| `bfp_exp0/1` | in | 5 | Exponents of Z0, Z1 |
-| `cfg_band_lo/hi` | in | 11 + 11 | Per job type (SW / MB) |
-| `cfg_eps` | in | 18 | PHAT floor |
-| `w0..w2_wr_*` | out | 11 addr, 36 data | Two writes per cycle: bins k and N−k |
-| `xp_done` | out | 1 | Strobe |
+Two passes over ±max_lag: per-pair argmax (first maximum, as numpy) and sidelobe (max \|r\| more than 2 samples from the peak); lag-window stream for the processor's sub-sample refinement. PSR = pk / side is computed by the processor. **406 (SW) / 86 (MB) cycles.**
 
-| Step | Definition |
-|---|---|
-| Unpack | X_a[k] = (Z[k] + Z*[N−k]) / 2, X_b[k] = (Z[k] − Z*[N−k]) / 2j |
-| Cross-spectrum | G = X_a · X_b*, exponents aligned |
-| PHAT | G / max(\|G\|, eps); 1/√\|G\|² from ROM seed + 1 Newton step, relative error ≤ 2⁻¹² |
-| Band mask | Bins outside [lo, hi] set to 0; default all bins (comparable with Python) |
-| Packing | W_p[k] = G_2p[k] + j·G_2p+1[k]; W_p[N−k] = G_2p[k]* + j·G_2p+1[k]* |
+### 3.6 `result_mbox` *(planned, Milestone C)*
 
-| Parameter | Value |
-|---|---|
-| Cycles | ≤ 6,200 (1 bin / pair / cycle over k = 0…1024) |
-| Pipeline latency | < 32 cycles |
-| DSP | ≈ 6 (complex multiply + Newton step) |
-
-### 3.5 `peak_search` — coarse TDOA peak
-
-| Port | Dir | Width | Description |
-|---|---|---|---|
-| `ps_start` | in | 1 | Strobe |
-| `w0..w2_rd_*` | in/out | 11 addr, 36 data | IFFT outputs: re = r_2p, im = r_2p+1 |
-| `cfg_maxlag` | in | 7 | 100 (SW) / 20 (MB) |
-| `pk_lag[0..5]` | out | s8 | Coarse lag, samples |
-| `pk_val[0..5]` | out | s18 | Peak value |
-| `pk_psr[0..5]` | out | 16 | Peak-to-sidelobe ratio, Q8.8 |
-| `lagwin_wr_*` | out | 12 addr, 32 data | All lags in ± max_lag, to `result_mbox` |
-| `ps_done` | out | 1 | Strobe |
-
-| Parameter | Value |
-|---|---|
-| Lag range | ± max_lag only: addresses N−L … N−1, then 0 … L |
-| Coarse peak | Argmax per pair, 1-sample resolution |
-| PSR | Peak / largest \|r\| outside ± 2 samples of the peak (within ± max_lag) |
-| Lag window | 2·max_lag + 1 values per pair (201 SW / 41 MB) for HPS sinc refinement |
-| Cycles | ≤ 1,206 |
-
-### 3.6 `result_mbox` — event descriptors to the HPS
-
-| Port | Dir | Width | Description |
-|---|---|---|---|
-| `job_meta`, `bfp_exp`, `pk_*`, `lagwin_wr_*` | in | — | Per-job results |
-| `avs_address` | in | 14 | Avalon-MM slave on LW H2F bridge (word address, 64 KB) |
-| `avs_read`, `avs_readdata` | in, out | 1, 32 | Read port |
-| `avs_waitrequest` | out | 1 | |
-| `irq` | out | 1 | To `f2h_irq0` |
-| `mbox_wr_ptr` | out | 3 | To `csr` |
-| `mbox_rd_ptr` | in | 3 | From `csr` (written by HPS) |
-
-| Parameter | Value |
-|---|---|
-| Slots | 8 × 8 KB ring (≈ 5 kB used per SW descriptor) |
-| IRQ | Level, high while `wr_ptr` ≠ `rd_ptr`; rises ≤ 1 µs (100 cycles) after a slot completes |
-| Overflow | If all slots are full, drop the new job and count it; never overwrite an unread slot |
-| HPS read time | ≤ 1 ms per SW descriptor |
-
-Proposed descriptor layout (32-bit words, offsets in bytes):
-
-| Offset | Field |
-|---|---|
-| 0x000 | magic[15:0], type[16], job_id[31:17] |
-| 0x004 / 0x008 | ts lo / hi (onset, 100 kHz units) |
-| 0x00C | ref_ch[1:0], reliable[2], late[3], saturated[4], max_lag[14:8], bfp_exp[20:16] |
-| 0x010 – 0x02C | SW features: pk_pos, pk_neg, tn per channel (packed) |
-| 0x040 – 0x054 | pk_lag[6] (s8) + pk_psr[6] (Q8.8), packed |
-| 0x058 – 0x06C | pk_val[6] |
-| 0x080 – … | lag window: 6 pairs × (2·max_lag + 1) words, pair-major |
+As in v1: descriptor ring to the processor with IRQ. Contents now known from `gsl_core`'s outputs:
+- **SW / MB records:** id, timestamps, reference channel, features, reliability.
+- **Job results:** lags, peaks, sidelobes, exponents, error flag.
+- **Lag windows:** 6 × (2·max_lag + 1).
+- **Health:** late / overflow / underflow counters.
 
 ---
 
-## 4. Infrastructure
+## 4. Infrastructure *(planned, Milestone C)*
 
-### 4.1 `csr` — control / status registers
+### 4.1 `csr`
 
-Avalon-MM slave on the LW H2F bridge, 32-bit.
+Drives the 43 configuration ports of `gsl_core` and reads its status. Register map to be fixed in Milestone C. Configuration groups:
+- `fe` (gain, offset, dtrim, DC enable)
+- `sw` (thresholds, holdoff, blanking, features, N-wave tests)
+- `mb` (thresholds, settle, holdoff, timeout)
+- windows
+- PHAT bands and floors
+- masks
 
-| Parameter | Value |
+Status:
+- `rp_underflow`, `late_cnt`, `ovf_cnt`, `res_err`
+- `noise_valid` (SW, MB)
+- event counters
+
+### 4.2 `raw_dma` (optional)
+
+Unchanged from v1.
+
+---
+
+## 5. Resources (yosys `synth_intel_alm -family cyclonev`, indicative)
+
+| Block | LUTs before → after | FFs before → after | M10K | 18×18 multipliers before → after |
+|---|---|---|---|---|
+| `replay_src` | 292 | 106 | 7 | 0 |
+| `fe_cond` | 3,992 → **2,174** | 1,282 → 638 | 3 → 4 | 6 → 4 |
+| `mb_decim` | 2,410 → **1,056** | 449 → 325 | 3 | 16 → 2 |
+| `sw_det` | 2,970 → 3,048 | 1,360 → 1,596 | 0 | 18 → 8 |
+| `mb_det` | 10,828 → **2,546** | 3,677 → 1,463 | 0 → 1 | 14 → 6 |
+| `evt_sched` | 8,238 → **5,142** | 4,001 → 2,029 | 0 | 0 |
+| `gcc_engine` (loader, bank, FFT, xspec, peak) | 5,590 | 2,390 | 46 | 12 |
+| `cap_ring` × 2 | — | — | 72 | 0 |
+| **Total** | **34,320 → 19,848 (−42%)** | **13,265 → 8,547 (−36%)** | **131 → 133 / 553 (24%)** | **66 → 32 (≈ 16 / 112 DSP)** |
+
+**Area optimisation (done).** About 10–13k ALMs, or 25–32% of the device, down from 40–55%. Behaviour is unchanged: the optimised RTL produces byte-identical logs to the original on all 15 Milestone B scenarios, plus a 15 m case with masks in both directions and `fe_cond` with non-zero trims, gains and offsets. It also matches in Icarus at 100 clocks per sample. The bit-true Python models need no changes.
+
+| Block | Change |
 |---|---|
-| Config writes | Shadowed; applied together at the next frame boundary |
-| 64-bit reads | Reading the low word latches the high word |
-| Status bits | Sticky, write-1-to-clear |
+| `mb_det` | 4 × 16 delay lines of squares moved from registers into a 64 × 36 RAM (circular buffers, cleared after reset); scan reads the RAM; one shared threshold multiplier |
+| `evt_sched` | Job queue stores mask centres, not bounds (formed at dispatch); one set of overlap units for both job types; MB window time recomputed at dispatch; **queue depth 8 → 4** (occupancy never exceeds 1, even at 900 rpm) |
+| `fe_cond` | Filter history in a 64 × 18 RAM read in step with the coefficient ROM; gain and taps share one multiplier |
+| `mb_decim` | One multiply-accumulator, channels in sequence (263 cycles per output); history 64 → 128 slots so new samples can't overwrite taps still to be read at any frame cadence |
+| `sw_det` | Two shared multipliers; the margin threshold is stored per channel. Saves DSP, not LUTs (its logic is mostly feature tracking) |
 
-Proposed register map:
+**Minimum frame cadence:** every block needs at least about 64 clocks per sample (`fe_cond` uses 49). Real time is 1000; simulation uses 250 (Verilator) or 100 (Icarus).
 
-| Offset | Name | Access | Content |
+---
+
+## 6. Verification (as done)
+
+| Level | Where | Method | Result |
 |---|---|---|---|
-| 0x000 | `VERSION` | RO | Build ID |
-| 0x004 | `CTRL` | RW | enable, `src_sel`, `ts_clear`, soft reset |
-| 0x008 | `STATUS` | RO / W1C | `adc_err`, `rp_underflow`, `job_late`, `queue_ovf`, `mbox_ovf`, `dma_ovr` |
-| 0x010 / 0x014 | `TS_LO` / `TS_HI` | RO | Current `ts64` |
-| 0x018 – 0x020 | `PPS_TS_LO/HI`, `PPS_FRAC` | RO | Last PPS timestamp |
-| 0x040 – 0x05C | `GAIN[4]`, `OFFSET[4]` | RW | `fe_cond` |
-| 0x060 – 0x06C | `DTRIM[4]` | RW | `fe_cond` |
-| 0x070 – 0x07C | `SW_THR`, `SW_WIN`, `SW_HOLDOFF`, `DT_MIN` | RW | `sw_det` |
-| 0x080 – 0x08C | `MB_THR`, `MB_WIN`, `MB_SETTLE`, `MB_HOLDOFF` | RW | `mb_det` |
-| 0x090 – 0x09C | `WIN_SW`, `WIN_MB`, `MAXLAG`, `TAPER` | RW | Windows and lags |
-| 0x0A0 – 0x0AC | `BAND_SW`, `BAND_MB`, `PHAT_EPS` | RW | `xspec_phat` |
-| 0x0B0 | `LATENCY` | RO | `lat_fe`, `lat_dec` |
-| 0x0C0 / 0x0C4 | `MBOX_WR_PTR` / `MBOX_RD_PTR` | RO / RW | Mailbox ring |
-| 0x0D0 – 0x0DC | `DMA_BASE`, `DMA_SIZE`, `DMA_WR_PTR`, `DMA_CTRL` | RW / RO | `raw_dma` |
-| 0x0E0 – 0x0F4 | Counters: frames, sw_evts, mb_evts, jobs, drops, adc_errs | RO | Diagnostics |
-| 0x100 – 0x1FF | `RP_FIFO` | WO | `replay_src` frame writes |
+| `fft2048` | `fft2048/` | DC, tones, complex, IFFT round trip vs double DFT; bit-true model | bit-exact; SNR 82–101 dB |
+| `xspec_phat` | `xspec_phat/` | 4 signal cases through FFT → xspec → IFFT | bit-exact; fixed-point TDOA error ≤ 0.2 µs |
+| **Milestone A** | `gcc_engine/` | 10 jobs incl. generator scenarios, ring wrap-around | bit-exact; bearing ≤ 0.25° |
+| **Milestone B** | `stream/` | 15 scenarios played continuously: 50–1500 m, 3 noise levels, bullet drag (incl. subsonic), 4 mismatch scenarios, 900 rpm burst | every block bit-exact; Δt within budget; bearing ≤ 0.75° (2.0° el at 1500 m / 0.5 Pa) |
+| Cadence | `stream/` | 250 vs 1000 clocks per sample on 6 scenarios | byte-identical logs |
+| Simulators | `stream/` | Icarus vs Verilator (50 m scenario) | byte-identical logs |
 
-### 4.2 `raw_dma` — continuous raw logging (optional)
+**Separation rule:** detector-side computations never use generator parameters. See `SIMULATION.md`.
 
-| Port | Dir | Width | Description |
-|---|---|---|---|
-| `src_ch0..3`, `src_valid` | in | s16, 1 | Raw (pre-`fe_cond`) frames |
-| `cfg_base`, `cfg_size`, `cfg_en` | in | 32, 32, 1 | DDR3 circular buffer |
-| `avm_*` | out | 32 addr, 64 data, burst 8 | Write master on an F2SDRAM port |
-| `dma_wr_ptr` | out | 32 | To `csr` |
-| `dma_ovr` | out | 1 | Sticky |
+---
 
-| Parameter | Value |
+## 7. Folder map
+
+| Folder | Contents |
 |---|---|
-| Rate | 800 kB/s sustained (one 64-bit frame per 10 µs) |
-| Burst | 8 frames = 64 B |
-| FIFO | ≥ 128 frames (1.28 ms) |
-| Buffer | e.g. 8 MB = 10 s, reserved on the HPS via device-tree `reserved-memory` |
-
----
-
-## 5. Resource estimate (5CSXFC6, estimate only)
-
-| Resource | Use | Available |
-|---|---|---|
-| M10K — rings | ≈ 64 | 553 |
-| M10K — FFT buffers (5) | ≈ 40 | |
-| M10K — mailbox (64 KB) | ≈ 52 | |
-| M10K — FIFOs, ROMs | ≈ 10 | |
-| **M10K total** | **≈ 165 (30 %)** | |
-| DSP — FFT | ≈ 36 | 112 |
-| DSP — `fe_cond`, decimator, detectors, PHAT | ≈ 12 | |
-| **DSP total** | **≈ 48 (43 %)** | |
-
----
-
-## 6. Verification plan
-
-| Level | Method | Pass criterion |
-|---|---|---|
-| Block | Self-checking testbench per block | Cycle counts within the budgets above |
-| `fft2048` | Random + tone vectors vs NumPy | Output SNR consistent with ≤ 1 µs TDOA error |
-| Engine (10–13) | Windows from `gs_det_signal_prepare.py` output vs `gs_det_tdoa.py` | Coarse lags identical; refined TDOA within 1 µs |
-| System (sim) | Full RTL with `replay_src` fed from `gs_gen_apply_adc.py` WAVs | Onsets and TDOAs match the Python pipeline |
-| System (board) | Same WAVs through `replay_src` on hardware | Same as above, plus no `STATUS` errors over a 1 h soak |
-| Burst | Synthetic 900 rpm sequences | No `job_late`, `queue_ovf` or `mbox_ovf` |
-| Live ADC | Calibration source at known bearing | Residual skew after `dtrim` ≤ 0.5 µs |
-
----
-
-## 7. Mapping to existing RTL
-
-| Existing | Becomes | Changes |
-|---|---|---|
-| `fft1024-claude/fft1024.v` | `fft2048` | N = 2048, block-floating-point, multi-buffer select |
-| `fromClaude/gcc_phat_top.v` → `rfft1024_packed` | `gcc_loader` + unpack in `xspec_phat` | 4 channels in 2 packed FFTs |
-| `fromClaude/gcc_phat_core.v` | `xspec_phat` | 6 pairs, band mask, IFFT packing |
-| `fromClaude/peak_detector_tdoa.v` | `peak_search` | ± max_lag scan, PSR, lag window out; drop `tdoa_calc` |
-| `gcc_phat_top.v` parameters | — | FS 16000 → 100000, NFFT 1024 → 2048, D_MM 150 → 300 |
+| `fft2048/` | `fft2048`, `fft2048_bfly`, twiddle ROM, `fft_buf_bank`, `fft_sdp_ram` |
+| `xspec_phat/` | `xspec_phat`, `xspec_phat_unit`, rsqrt ROM |
+| `gcc_engine/` | `gcc_engine`, `gcc_loader`, `peak_search`, `cap_ring`; Milestone A testbench |
+| `stream/` | `replay_src`, `timebase`, `fe_cond`, `sw_det`, `mb_decim`, `mb_det`, `evt_sched`, `gsl_core`; Milestone B testbench |
+| `old/` | Earlier `fft1024` / `gcc_phat_top` RTL, superseded |

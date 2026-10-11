@@ -3,9 +3,9 @@
 - **Target platform:** Terasic DE10-Standard (Cyclone V SX 5CSXFC6D6F31C6: FPGA fabric + dual-core Cortex-A9 HPS)
 - **Reference product:** Metravib PILAR-V
 - **Derived from:** `python/det_config.ini`, `python/gen_config.ini`, `python/project.md`, `verilog/`, `reference/Pilar Accoustic Gunshot 2004.pdf`
-- **Version:** 2026-10-08
+- **Version:** 2026-10-09 (v2: measured values from Milestones A and B; v1 2026-10-08 was the pre-implementation estimate)
 
-Items marked **(verify)** are assumptions, not sourced figures.
+Items marked **(verify)** are assumptions, not sourced figures. Values marked **measured** come from the bit-exact simulations in `fft2048/`, `xspec_phat/`, `gcc_engine/` (Milestone A) and `stream/` (Milestone B).
 
 ---
 
@@ -14,12 +14,14 @@ Items marked **(verify)** are assumptions, not sourced figures.
 | Item | Value |
 |---|---|
 | Sample rate | 100 kHz per channel, 4 channels, simultaneous sampling |
-| TDOA error budget | ≤ 10 µs per mic pair (95 %) → ≈ 0.9° azimuth |
-| Δt (SW → MB) error budget | ≤ 0.5 ms |
+| TDOA error budget | ≤ 10 µs per mic pair (95 %) → ≈ 0.9° azimuth. **Measured:** fixed-point part ≤ 0.2 µs; bearing ≤ 0.75° over 50–1500 m (§4.3) |
+| Δt (SW → MB) error budget | ≤ max(0.5 ms, 0.5 % of Δt) (v1: 0.5 ms; §4.4). **Measured** worst: 0.77 ms at 1500 m = 0.03 % |
 | FFT size | 2048 for both paths: SW at 100 kHz, MB decimated to 20 kHz |
-| FPGA compute per event | ≈ 88k cycles = 0.88 ms @ 100 MHz (budget 2 ms) |
-| Processing after MB window closes | ≈ 70 ms worst case |
-| Burst capability | 900 rpm (66.7 ms/shot) at ≈ 3 % FPGA engine load |
+| FPGA compute per event | **Measured** 65.2k cycles = 0.65 ms @ 100 MHz (v1 estimate 88k; budget 2 ms) |
+| Processing after MB window closes | FPGA 0.65 ms (measured) + processor ≈ 67 ms (estimate, Milestone C) |
+| Burst capability | **Measured** 900 rpm: 8 of 8 shots, 2.0 % engine load, no late jobs |
+| Range coverage | **Measured** in simulation: 50–1500 m (§10) |
+| Range accuracy | Dominated by bullet drag, not timing: a drag-aware range solver is required (§4.4) |
 
 **Partition rule.** Anything that touches samples or timestamps runs in the FPGA (hard real time). The HPS only handles per-event math (soft real time). Linux scheduling jitter can therefore delay a report but never corrupt a measurement. All event times (t_SW, t_MB) come from the FPGA sample counter; the HPS never timestamps.
 
@@ -93,6 +95,17 @@ The Monte Carlo treats pair errors as independent and random. Systematic errors 
 | Sample-clock jitter | ≈ 0 | CONVST generated from FPGA PLL |
 | **RSS** | **7.4 µs** | ≈ 0.7° azimuth; 2.6 µs margin to the 10 µs target |
 
+**Measured (v2).**
+- **Fixed-point FFT / PHAT:** ≤ 0.2 µs against a double-precision reference, inside its 1 µs allocation. One step of the 1/256-sample measurement grid at 20 kHz.
+- **Total per-pair error on generator scenarios:** 2–7 µs on SW pairs, 4–12 µs on MB pairs. The estimator dominates.
+- **MB pairs exceed 10 µs in some cases:**
+  - 12.4 µs at 50 m
+  - 12.2 µs at 1500 m / 0.2 Pa
+  - one 101 µs outlier at 1500 m / 0.5 Pa (13 dB blast SNR)
+
+  The least-squares fit over 6 pairs keeps bearing within 0.75°, except 2.0° elevation in the 0.5 Pa case, which is still inside ±5°. The processor should reject outlier pairs (closure check τ_ab + τ_bc − τ_ac ≈ 0).
+- **Mic positions off by up to 1 mm** (generator only, detector unaware): bearing error +0.5° elevation, consistent with the 3 µs allocation.
+
 #### 4.3.1 AFE phase mismatch
 
 **High-pass (coupling) corner.** A first-order HP at f_c leads the signal by τ = atan(f_c / f) / (2πf). The MB carries most of its energy below 500 Hz, so this mainly hits the MB TDOA.
@@ -142,7 +155,26 @@ Angle term with δα = 1.3° (m and s both at the 10 µs limit, combined):
 
 Below α ≈ 25° the formula is ill-conditioned regardless of hardware: the shooter is firing nearly along the line to the array.
 
-**Δt allocation: ≤ 0.5 ms.** That is < 3 % at 50 m for α ≥ 30°, and < 1 % at 200 m. It is easy for an energy onset detector. However, every constant filter delay in the SW and MB paths (FIR group delay, decimator delay) must be added back to t_SW and t_MB before forming Δt. An uncompensated 0.3 ms decimator delay alone would cost 1.5 % at α = 30°, 50 m.
+**Δt allocation (v2): ≤ max(0.5 ms, 0.5 % of Δt).** The 0.5 ms floor keeps < 3 % at 50 m for α ≥ 30°. At long range a fixed 0.5 ms is needlessly strict: Δt enters range as δd/d = δΔt/Δt, so 0.5 % of Δt stays about 60× inside the ±30 % spec. v1 used a flat 0.5 ms, which the 1000–1500 m scenarios "failed" with range errors of only 0.03 %.
+
+Constant delays are removed in the FPGA: `fe_cond` reports `x_ts` (4-sample latency removed) and `mb_decim` reports `y_ts` (31-sample group delay removed), so SW and MB timestamps compare directly.
+
+**Measured MB onset bias vs range** (weaker, smoother blasts are detected later; SW onsets are within −50 … 0 µs):
+
+| Range | 50 m | 100 m | 200 m | ~430 m | 600 m | 800 m | 1000 m | 1200 m | 1500 m |
+|---|---|---|---|---|---|---|---|---|---|
+| MB onset error | −0.03 ms | −0.08 ms | +0.09 ms | +0.31 ms | +0.39 ms | +0.49 ms | +0.53 ms | +0.65 ms | +0.75 ms |
+| As % of Δt | 0.05 % | 0.05 % | 0.03 % | 0.04 % | 0.04 % | 0.04 % | 0.03 % | 0.03 % | 0.03 % |
+
+**Bullet drag dominates the range budget (v2 finding).** With the generator's drag model (`python/drag_model.md`), the constant-speed formula above **overestimates** range even with perfect inputs:
+
+| Calibre | 200 m | 400 m | 600 m | 800 m | 1000 m | 1500 m |
+|---|---|---|---|---|---|---|
+| 5.56 | +8 % | +21 % | +48 % | +118 % | no SW | no SW |
+| 7.62 | +8 % | +19 % | +41 % | +91 % | +270 % | no SW |
+| 12.7 | +3 % | +7 % | +11 % | +16 % | +24 % | +57 % |
+
+A decelerating bullet delivers its shockwave later, which shrinks Δt. Range therefore needs a drag-aware solver with the **detector's own** ballistic table (v₀ and decay length per calibre class, from independent data; never the generator's library). That is Milestone C software. Timing errors (above) are now a minor term.
 
 **Speed of sound.** c changes by ≈ 0.17 % per °C. A ± 2 °C air-temperature sensor costs ≈ 0.35 % of range.
 
@@ -164,59 +196,56 @@ Reasons for fs = 100 kHz:
 
 Decimating the MB path by 5 is safe because MB energy is below ~1 kHz (PILAR: < 500 Hz at hundreds of metres). One FFT engine size (2048) serves both events. Avoiding circular wrap within ± max_lag requires NFFT ≥ window + max lag, which both paths satisfy.
 
+**Masks (v2).** The windows stay at 18 ms (SW) and 86 ms (MB). Overlapping events are cut out instead of shortening windows:
+- **A shockwave inside an MB window** (burst fire): −1 … +3 ms around its onset.
+- **A later blast inside an SW window** (short range): from 1 ms before it to the window end.
+
+The masked samples are zeroed on all 4 channels by `gcc_loader`.
+
 ---
 
 ## 6. Block budgets
 
 **Clock assumption:** 100 MHz fabric clock from a PLL (the board oscillator is 50 MHz). At 50 MHz every compute time below doubles and still fits.
 
-### 6.1 FPGA — stream rate (hard real time)
+### 6.1 FPGA — stream rate (hard real time) — measured
 
 One 4-channel sample frame arrives every 10 µs = 1000 clock cycles.
 
-| Block | Throughput | Latency budget | Notes |
+| Block | Cycles used | Latency | Notes |
 |---|---|---|---|
-| ADC interface (e.g. AD7606B) | 4 ch / 10 µs | conversion + readout ≤ 5 µs | CONVST from PLL; serial 2-line readout at 25 MHz ≈ 1.3 µs |
-| Sample counter / timestamp | 1 / frame | 0 | 64-bit; latched on each detected onset |
-| HP + per-channel gain/delay trim | 4 ch / frame | ≤ 0.5 ms, constant | one shared DSP gives 250 MAC / ch / frame |
-| SW onset detector | 4 ch / frame | trigger ≤ 0.5 ms after onset | amplitude/energy vs 5 ms noise floor (`sw_threshold_mult = 10`) |
-| MB decimator ÷ 5 | 4 ch / 10 µs in, 4 ch / 50 µs out | ≈ 0.3 ms group delay, constant | ~61-tap polyphase FIR; compensate in t_MB |
-| MB onset detector | 4 ch / 50 µs | trigger ≤ 1 ms after onset | armed after SW; adaptive energy-settling FSM |
-| SW ring buffer | continuous | — | 4096 × 18 bit per channel = 41 ms |
-| MB ring buffer | continuous | — | 4096 × 18 bit per channel = 205 ms |
+| `adc_if` (Milestone D) | ≤ 500 per frame (budget) | conversion + readout ≤ 5 µs | Replaced by `replay_src` in simulation |
+| `timebase` | — | 0 | 64-bit frame index |
+| `fe_cond` | 49 per frame | 4 samples, constant | 9-tap delay trim, DC blocker; `x_ts` corrected |
+| `sw_det` | 6 per frame (+4 per noise block) | candidate at the crossing sample; confirmed 1 ms later; record 2.56 ms later | N-wave qualification |
+| `mb_decim` | 263 per 5 frames | 31 samples (0.31 ms), constant | `y_ts` corrected; one sequential MAC |
+| `mb_det` | 9 per 5 frames (+32 scan, +12 thresholds) | trigger on 16-sample energy; held ≤ 1 ms during SW qualification | onset back-tracking; delay lines in RAM |
+| `sw_ring` / `mb_ring` | 1 write per frame / per 5 frames | — | 41 ms / 205 ms of history |
+| `evt_sched` | every cycle | release at window end; dispatch within a few cycles | deadline margin 16 samples |
 
-The ring buffers replace ping-pong buffers. Each holds ≥ 2× its window, so a window can be read into the FFT right after it closes while acquisition continues. Overlapping events are just multiple start pointers into the same ring.
+### 6.2 FPGA — event rate (per SW or MB window) — measured
 
-### 6.2 FPGA — event rate (per SW or MB window)
-
-Cycle model of the current radix-2 core (`verilog/fft1024-claude`): 2N (bit-reverse) + (N/2)·log₂N (butterflies). For N = 2048 that is 4096 + 11,264 = 15,360 cycles.
-
-| Step | Operations | Cycles | @ 100 MHz | @ 50 MHz |
-|---|---|---|---|---|
-| Load 4 ch into 2 packed complex inputs | 4 × 2048 samples, 2 / cycle | 4.1k | 41 µs | 82 µs |
-| Forward FFT | 2 × FFT-2048 | 30.7k | 307 µs | 614 µs |
-| Unpack + cross-spectrum + PHAT | 6 pairs × 1025 bins | 6.2k | 62 µs | 123 µs |
-| Inverse FFT | 3 × IFFT-2048 (2 pairs each) | 46.1k | 461 µs | 922 µs |
-| Peak search (± max_lag only) | 6 × 201 lags | 1.2k | 12 µs | 24 µs |
-| **Total** | | **88.3k** | **0.88 ms** | **1.77 ms** |
-| **Budget** | | | **2 ms** | **4 ms** |
-
-**Packing tricks:**
-
-- **Forward:** two real channels per complex FFT (re = ch_a, im = ch_b), as in `rfft1024_packed`. Unpack with X_a[k] = (Z[k] + Z*[N−k]) / 2 and X_b[k] = (Z[k] − Z*[N−k]) / 2j.
-- **Inverse:** each GCC-PHAT correlation is real, so IFFT(G₁ + j·G₂) = r₁ + j·r₂. That puts 6 pairs into 3 IFFTs.
-
-**Fixed point.** The current core is 18-bit Q1.17 with an unconditional ÷ 2 per stage. That costs dynamic range on short, low-energy windows (a ~1 ms SW pulse inside an 18 ms window). Use block-floating-point (per-stage overflow detect), and confirm the 1 µs allocation by bit-true comparison with `gs_det_tdoa.py`.
-
-### 6.3 FPGA resources (estimate)
-
-| Resource | Use | Available (5CSXFC6) |
+| Step | Cycles | @ 100 MHz |
 |---|---|---|
-| M10K — ring buffers | 4 ch × 2 paths × 8 blocks = 64 | 553 |
-| M10K — FFT work memory + spectra | ≈ 50 | |
-| M10K — total | ≈ 115 (≈ 21 %) | |
-| DSP — FFT | ≈ 36 (per `fft1024` readme) | 112 |
-| DSP — filters, detectors | ≈ 8 | |
+| `gcc_loader` (ring → Z0, Z1, masks) | 2,052 | 21 µs |
+| 2 × FFT (`fft2048`, DIT, bit-reversed input) | 2 × 11,321 | 226 µs |
+| `xspec_phat` | 6,167 | 62 µs |
+| 3 × IFFT | 3 × 11,321 | 340 µs |
+| `peak_search` | 406 (SW) / 86 (MB) | 4 / 1 µs |
+| **Job total** | **65,239 (SW) / 64,919 (MB)** | **0.65 ms** |
+
+v1 estimated 88k cycles. The FFT avoids the bit-reverse pass (producers write bit-reversed), the loader writes both packed buffers per cycle, and peak search reads all three correlation buffers in parallel. Two back-to-back jobs: 1.30 ms.
+
+### 6.3 FPGA resources — measured (yosys, indicative)
+
+| Resource | Milestone B, area-optimised | (before optimisation) | Available |
+|---|---|---|---|
+| LUTs | ≈ 19,800 (≈ 10–13k ALMs, 25–32 %) | ≈ 34,300 | 41,910 ALMs |
+| FFs | ≈ 8,500 | ≈ 13,300 | 166,036 |
+| M10K | 133 (24 %) | 131 | 553 |
+| 18×18 multipliers | 32 (≈ 16 DSP blocks) | 66 | 112 DSP blocks |
+
+v1 estimated about 115 M10K, 48 DSP and about 9k ALMs. The optimisation moved delay lines and histories into RAM, shared multipliers, and serialised the decimator, with byte-identical behaviour (`fpga_blocks.md` §5).
 
 ### 6.4 FPGA → HPS transfer
 
@@ -248,48 +277,65 @@ The windowed-sinc refinement replaces the 16× zero-padded IFFT in `gs_det_tdoa.
 
 ## 7. End-to-end timeline
 
-Times are measured from SW arrival at the array (t = 0), using worst-case budgets.
+Times from SW arrival at the array (t = 0). FPGA entries are **measured** (Milestone B, 200 m scenario); processor entries are still estimates (Milestone C).
 
-| Event | 200 m (Δt ≈ 324 ms) | 1500 m (Δt ≈ 2.60 s) |
+| Event | 200 m (Δt ≈ 324 ms) | 1500 m (Δt ≈ 2.56 s) |
 |---|---|---|
-| SW arrives | 0 | 0 |
-| SW trigger | 0.5 ms | 0.5 ms |
+| SW candidate (first crossing) | 0 (onset −50 … 0 µs) | 0 |
+| SW confirmed (N-wave qualification) | 1 ms | 1 ms |
 | SW window closed | 15 ms | 15 ms |
-| SW TDOAs (FPGA) | 17 ms | 17 ms |
-| Early alert: shot detected + SW direction | ≈ 85 ms | ≈ 85 ms |
-| MB arrives | 324 ms | 2.60 s |
-| MB window closed (+ 80 ms) | 404 ms | 2.68 s |
-| MB TDOAs (FPGA) | 406 ms | 2.68 s |
-| Final alert: bearing + range | ≈ 475 ms | ≈ 2.75 s |
+| SW TDOAs (FPGA) | 15.7 ms | 15.7 ms |
+| Early alert: shot detected + SW direction (processor estimate) | ≈ 85 ms | ≈ 85 ms |
+| MB arrives | 324 ms | 2.56 s |
+| MB detected (onset bias) | +0.09 ms | +0.75 ms |
+| MB window closed (+ 80 ms) | 404 ms | 2.64 s |
+| MB TDOAs (FPGA) | 404.7 ms | 2.64 s |
+| Final alert: bearing + range (processor estimate) | ≈ 475 ms | ≈ 2.71 s |
 
-- Processing adds ≈ 70 ms after the MB window closes. Everything else is acoustic propagation.
-- With a single array, the early alert's trajectory has a two-fold ambiguity until the MB arrives (PILAR 2004).
-- If no MB is detected (suppressed weapon, or MB below the noise floor), the SW-only report waits for `dt_max_s` = 5 s. Consider issuing a provisional report earlier.
-
----
-
-## 8. Burst fire (900 rpm)
-
-- **Compute:** 2 events × 0.88 ms per 66.7 ms shot ≈ 2.6 % of one FFT engine at 100 MHz. Throughput is not a constraint.
-- **Window overlap:** the 86 ms MB window is longer than the shot interval. It will contain the next shot's MB and, at 200 m, the SW of shot n+5. Trim `mb_window_post_s` to ≈ 40 ms (the Friedlander positive phase is only 2–4 ms), and/or blank intervals around detected SWs before GCC-PHAT.
-- **Association:** up to `dt_max_s` / 66.7 ms ≈ 75 SW events can be waiting for an MB at once. The HPS queue must hold that many.
-- **MB detector:** the adaptive energy-settling search (`project.md`, Known Limitation 5) assumes an isolated event. Under burst fire the energy never settles, so it needs a burst-aware mode.
+- The FPGA adds 0.65 ms per window. Everything else is acoustic propagation, the window lengths, and the processor (estimated ≈ 70 ms).
+- A subsonic bullet produces only the MB events: bearing at ≈ MB + 81 ms, no range from Δt.
 
 ---
 
-## 9. Repo items that conflict with this budget
+## 8. Burst fire (900 rpm) — measured
 
-- [ ] `devices/readme.md`: 16 kHz sampling and 7 kHz LPF → 100 kHz and a 4th-order ~25 kHz anti-alias filter.
-- [ ] `devices/readme.md`: 1 µF / 10 kΩ coupling (16 Hz corner) → ≤ 2 Hz, or per-channel calibration (4.3.1).
-- [ ] `devices/readme.md`: MCP6002 (1 MHz GBW) → ≥ 10 MHz GBW op-amp to remove the gain-stage phase spread (4.3.1).
-- [ ] Onboard ADC: single multiplexed 12-bit converter (`devices/readme.md` assumes ADC128S022 — confirm the part on your board revision). The skew is calibratable; the ~74 dB dynamic range is the larger problem → external 16-bit simultaneous-sampling ADC.
-- [ ] `python/project.md`: ADS8688 is listed as simultaneous-sampling, but it is a multiplexed 8-channel SAR. Simultaneous options: AD7606B, ADS8588S.
-- [ ] `verilog/fromClaude/gcc_phat_top.v`: FS = 16000, NFFT = 1024, D_MM = 150 → 100000 / 2048 / 300.
-- [ ] `verilog/fromClaude/peak_detector_tdoa.v`: `tdoa_calc` computes a single-pair 2D angle → output raw lags only and do the 3D solve on the HPS.
-- [ ] `verilog/fft1024-claude`: generalise to N = 2048, add block-floating-point scaling, and pack 2 pairs per IFFT.
-- [ ] `python/gs_det_tdoa.py`: add the windowed-sinc refinement alongside the 16× zero-padded IFFT, so hardware and simulation use the same estimator.
-- [ ] `python/det_config.ini`: `mb_window_post_s = 0.080` → ≈ 0.040 for burst operation (Section 8).
-- [ ] `python/gs_det_*`: compensate constant filter/decimator delays before forming Δt (4.4).
+8 shots, 6667 samples apart, 200 m (Milestone B `burst` scenario):
+
+- **Detection:** 8 of 8 SW and 8 of 8 MB events, every block bit-exact, no late jobs or overflow.
+- **Compute:** 2 jobs × 0.65 ms per 66.7 ms ≈ 2.0 % of the engine.
+- **Window overlap:** at 200 m, shot k+5's shockwave lands 9.5 ms after shot k's blast, inside its MB window. Without a mask that gave a 10° bearing error. **Implemented:** SW masks in MB windows (`evt_sched` + `gcc_loader`), bringing it to ≤ 0.33°. 5 masks were applied in the burst. Trimming the MB window (v1's suggestion) can't fix it at this range.
+- **MB detector under burst:** `mb_det` arms once settled and stays armed (latched), and it runs continuously. Without the latch, 1 of 8 blasts was missed.
+- **Association** (up to `dt_max_s` / 66.7 ms ≈ 75 pending SW events) is still a processor task (Milestone C).
+
+---
+
+## 9. Repo items that conflict with this budget — status
+
+- [ ] `devices/readme.md`: 16 kHz sampling and 7 kHz LPF → 100 kHz and a 4th-order ~25 kHz anti-alias filter. *(Milestone D hardware)*
+- [ ] `devices/readme.md`: 1 µF / 10 kΩ coupling (16 Hz corner) → ≤ 2 Hz, or per-channel calibration (4.3.1). *(D)*
+- [ ] `devices/readme.md`: MCP6002 (1 MHz GBW) → ≥ 10 MHz GBW op-amp (4.3.1). *(D)*
+- [ ] Onboard ADC: multiplexed 12-bit → external 16-bit simultaneous-sampling ADC. Milestone B also showed a ~40× level range between a 50 m and a 1500 m blast. *(D)*
+- [ ] `python/project.md`: ADS8688 is listed as simultaneous-sampling, but it is multiplexed. Simultaneous options: AD7606B, ADS8588S.
+- [x] `gcc_phat_top.v` parameters, `peak_detector_tdoa.v` `tdoa_calc`, `fft1024`: superseded by `fft2048/`, `xspec_phat/` and `gcc_engine/` (old RTL moved to `old/`).
+- [ ] `python/gs_det_tdoa.py`: add the windowed-sinc refinement and the PHAT band masks (SW 20–512, MB 10–205 bins), so Python and FPGA use the same estimator.
+- [x] `python/det_config.ini` `mb_window_post_s = 0.080`: kept; burst overlap is handled by masks instead (§8).
+- [x] Constant delays before Δt: compensated in the FPGA (`x_ts`, `y_ts`). *(Python side still open)*
+- [ ] `python/gs_det_signal_prepare.py`: add a minimum noise floor (`noise_min`). With ADC noise below 1 LSB its thresholds collapse and onsets come out up to 322 ms early.
+- [ ] `python/det_config.ini [bullet_reference_library]`: give the detector its own bullet values (they currently equal the generator's), per the separation rule in `SIMULATION.md`.
+- [ ] Processor (Milestone C): drag-aware range solver with a detector-owned ballistic table (§4.4); blast-only (subsonic) path; outlier-pair rejection (§4.3).
+
+---
+
+## 10. Range coverage (v2, measured in simulation)
+
+| Range | Status | Limiting factor |
+|---|---|---|
+| < 50 m | Out of scope by decision | Below ~20 m the blast falls inside the 10 ms MB blanking. 25 m passes with defaults; 15 m passes with 3 ms blanking and 2 ms settling, untested against ground reflections. |
+| 50 m | ✓ | Blast front as steep as a shockwave → N-wave symmetry classification |
+| 50–1500 m | ✓ | MB onset bias grows to 0.75 ms (0.03 % of Δt) |
+| 1500 m | ✓ at 0.05 / 0.2 / 0.5 Pa noise | 0.5 Pa (13 dB blast SNR) is the edge: one outlier MB pair, 2.0° elevation error |
+| Subsonic at the array | ✓ blast-only event | 5.56 beyond ≈ 900 m, 7.62 beyond ≈ 1000 m (generator drag model): bearing only, range needs another source |
+| Mismatch (detector unaware) | ✓ | Mics off by up to 1 mm; different SW / MB shapes; 40 °C air |
 
 ---
 
