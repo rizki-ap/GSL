@@ -348,6 +348,12 @@ The generator is implemented in Python using NumPy and SciPy. Configuration is a
 
 > **TODO:** measure and report the runtime; the earlier "under 50 ms" figure was not measured.
 
+Fig. 3 shows one example of the output at a single sensor. The two events are separated by 149.6 ms, and the zoomed panels show the N-wave and the Friedlander pulse as rendered on the 100 kHz grid.
+
+![Fig. 3: example generator output](fig_example_waveform.png)
+
+**Fig. 3.** Example generator output at sensor 0: 5.56 NATO at Mach 2.5, shooter 100 m from the array with a 10 m miss distance, 20 °C, 50 % relative humidity, $f_s$ = 100 kHz, and white Gaussian noise of standard deviation 0.02 Pa (SNR = 43.5 dB under the definition of Section 3.6). (a) Full frame, with the shock-to-blast delay $\Delta t$. (b) Shockwave: N-wave of duration $T_N$ = 0.18 ms, individual samples marked. (c) Muzzle blast: Friedlander pulse with positive phase $t_+$ = 0.53 ms. The peaks drawn (126 Pa and 79 Pa) are lower than the Stage II model values (168 Pa and 105 Pa) because the absorption of step 4 rounds the sharp fronts.
+
 ---
 
 ## 4. Validation Setup
@@ -448,7 +454,7 @@ The shock-to-blast delay at sensor $i$ is measured as $\Delta t_i^{\mathrm{meas}
 | Ruger .223 muzzle blast | `[ ]` | `[ ]` | `[ ]` | `[ ]` |
 | Glock 9 mm muzzle blast | `[ ]` | `[ ]` | `[ ]` | `[ ]` |
 
-Fig. 3 (`[to be generated]`) overlays synthesized and measured waveforms at a representative sensor for each weapon, with the metrics annotated. Describe where the residual is concentrated (expected: late-time structure, ground reflection, directional radiation).
+Fig. 4 (`[to be generated]`) overlays synthesized and measured waveforms at a representative sensor for each weapon, with the metrics annotated. Describe where the residual is concentrated (expected: late-time structure, ground reflection, directional radiation).
 
 ### 5.2 Frequency-Domain Agreement
 
@@ -460,7 +466,7 @@ Fig. 3 (`[to be generated]`) overlays synthesized and measured waveforms at a re
 | Ruger .223 muzzle blast | 50–4000 | `[ ]` | `[ ]` | `[ ]` |
 | Glock 9 mm muzzle blast | 50–3000 | `[ ]` | `[ ]` | `[ ]` |
 
-Fig. 4 (`[to be generated]`) shows the trial-averaged power spectra on log-frequency, dB axes with predicted $f_{pk}$ and $f_{null}$ marked, together with the coherence curves. Agreement is expected to be closest near $f_{pk}$ for the blast and below $f_{null}$ for the N-wave. Above roughly 4 kHz the measured blast may carry more energy than the synthesis because of ground reflection and multipath, which the generator omits. A peak or null error larger than $\epsilon_T$ would indicate that the pulse shape, rather than its duration, is the limiting factor.
+Fig. 5 (`[to be generated]`) shows the trial-averaged power spectra on log-frequency, dB axes with predicted $f_{pk}$ and $f_{null}$ marked, together with the coherence curves. Agreement is expected to be closest near $f_{pk}$ for the blast and below $f_{null}$ for the N-wave. Above roughly 4 kHz the measured blast may carry more energy than the synthesis because of ground reflection and multipath, which the generator omits. A peak or null error larger than $\epsilon_T$ would indicate that the pulse shape, rather than its duration, is the limiting factor.
 
 ### 5.3 Timing Agreement
 
@@ -472,7 +478,7 @@ Fig. 4 (`[to be generated]`) shows the trial-averaged power spectra on log-frequ
 | Ruger .223 muzzle blast | `[ ]` | `[ ]` | `[ ]` | `[ ]` | — | — |
 | Glock 9 mm muzzle blast | `[ ]` | `[ ]` | `[ ]` | `[ ]` | — | — |
 
-Fig. 5 (`[to be generated]`) shows the error distributions. Report RMSE/MAE (about 1.25 is expected for Gaussian errors) and the relation of the errors to the survey uncertainty of Section 4.1.
+Fig. 6 (`[to be generated]`) shows the error distributions. Report RMSE/MAE (about 1.25 is expected for Gaussian errors) and the relation of the errors to the survey uncertainty of Section 4.1.
 
 ### 5.4 Consolidated Results
 

@@ -50,6 +50,12 @@ Signal generation is covered in Paper 1. The processor software (Milestone C) an
 
 ## 2. Measurement Principle
 
+Fig. 1 summarizes the principle with a worked example: a simulated 5.56 NATO shot at Mach 2.74, with the shooter 140 m from the array and 18 m above it, and the bullet passing 16 m from it. A single microphone hears two events (a). The arrival-time differences of the shockwave across the four microphones give its propagation direction (b), and those of the blast give the shooter's azimuth and elevation (c). The delay between the events and the angle between the two directions give the range (d). The N-wave's duration and strength carry the caliber (e). The rest of this section derives each step.
+
+![Fig. 1: decoding overview](fig_decoding_overview.png)
+
+**Fig. 1.** Worked example of single-array decoding (simulated with the generator of Paper 1; 100 kHz, white noise of 0.02 Pa, SNR 39.8 dB). (a) Signal at microphone 0, with the shock-to-blast delay $\Delta t$ = 215.4 ms. (b), (c) Shockwave and blast at the four microphones, each normalized; dotted lines mark the TDOAs to microphone 0 measured by the reference detector (Section 3.3). The worst pair errors against ground truth are 4.2 µs for the shockwave and 4.7 µs for the blast. (d) Top view of the geometry, with the propagation directions $\hat{\mathbf{m}}$ and $\hat{\mathbf{s}}$ at the array and the range equation of Section 2.4. (e) N-waves at microphone 0 for three calibers fired along the same trajectory at their nominal muzzle velocities, with peak-to-peak duration and negative peak; a 9 mm round (Mach 1.08) produces no N-wave. (f) Values decoded blind by the reference detector (Stages 1–3) against ground truth. Range uses the vector form of Section 2.4 with the detector's $\hat{\mathbf{s}}$, $\hat{\mathbf{n}}$ and $\Delta t$. Mach is the angle-only Method A of Section 2.5, which is biased low. The caliber row gives the measured feature only, because the caliber classifier is a demonstration (Section 2.5).
+
 ### 2.1 Array Geometry and Conventions
 
 The array is a regular tetrahedron with edge length $L = 0.30$ m. Its microphone positions $\mathbf{p}_0,\dots,\mathbf{p}_3$ are the scaled vertices
@@ -107,7 +113,7 @@ $$
 \text{azimuth} = \operatorname{atan2}(n_y, n_x), \qquad \text{elevation} = \arcsin(n_z).
 $$
 
-Applied to the shockwave, $\hat{\mathbf{s}} = \hat{\mathbf{k}}_{\mathrm{sw}}$.
+Applied to the shockwave, $\hat{\mathbf{s}} = \hat{\mathbf{k}}_{\mathrm{sw}}$. Fig. 1(b) and (c) show the two TDOA sets of the worked example; the blast set gives an azimuth of 149.72° and an elevation of 7.10°, against 149.74° and 7.38° true.
 
 **Far-field validity.** We computed the largest difference between the exact spherical-wave TDOA and the plane-wave TDOA over all six pairs and 20,000 random source directions. It is 1.86 µs at 25 m, 0.93 µs at 50 m, 0.23 µs at 200 m and 0.03 µs at 1500 m. Within the 50–1500 m design range the plane-wave error is therefore below 1 µs, an order of magnitude inside the per-pair budget of Section 5. The shockwave front is conical rather than spherical; its curvature across the array grows as the miss distance shrinks.
 
@@ -117,11 +123,11 @@ Applied to the shockwave, $\hat{\mathbf{s}} = \hat{\mathbf{k}}_{\mathrm{sw}}$.
 
 ### 2.4 Range from the Shockwave-to-Blast Delay
 
-Fig. 1 shows the geometry. It is the same as Fig. 2 of Paper 1, with the sensor replaced by the array centre.
+Fig. 2 shows the geometry. It is the same as Fig. 2 of Paper 1, with the sensor replaced by the array centre.
 
-![Fig. 1: shot geometry](gsl_geometry.svg)
+![Fig. 2: shot geometry](gsl_geometry.svg)
 
-**Fig. 1.** Geometry in the plane containing the trajectory and the array (from Paper 1). The muzzle-to-array distance is $d$. The shock that reaches the array is emitted at the detach point, a distance $x$ along the trajectory from the muzzle, and travels a distance $y$ along $\hat{\mathbf{s}}$. In the symbols of Paper 1, $a_i$ is the along-track coordinate $r$ and $r_{\perp,i}$ is the miss distance $b$.
+**Fig. 2.** Geometry in the plane containing the trajectory and the array (from Paper 1). The muzzle-to-array distance is $d$. The shock that reaches the array is emitted at the detach point, a distance $x$ along the trajectory from the muzzle, and travels a distance $y$ along $\hat{\mathbf{s}}$. In the symbols of Paper 1, $a_i$ is the along-track coordinate $r$ and $r_{\perp,i}$ is the miss distance $b$.
 
 **Vector form.** Following [4], the geometry gives
 
@@ -137,7 +143,7 @@ $$
 \boxed{\ d = \frac{c\,\Delta t}{1 - \hat{\mathbf{m}}\cdot\hat{\mathbf{s}}}\ }
 $$
 
-This needs only the two measured directions and the measured delay. Neither the bullet speed nor the miss distance appears.
+This needs only the two measured directions and the measured delay. Neither the bullet speed nor the miss distance appears. In the worked example of Fig. 1(d), $\alpha$ = 62.0° and $\Delta t$ = 215.4 ms give $d$ = 139.1 m, against 140.1 m true.
 
 **Scalar form.** The reference detector (`gs_det_shooter_locator.py`) instead solves, for the along-track coordinate $r$,
 
@@ -145,7 +151,7 @@ $$
 \Delta t = \frac{\sqrt{r^2 + b^2}}{c} - \frac{r + b\beta}{M c}, \qquad \beta = \sqrt{M^2 - 1},
 $$
 
-which is the difference of the blast and shock arrival times of Paper 1, and reports $d = \sqrt{r^2 + b^2}$. In the plane of Fig. 1, $\hat{\mathbf{m}} = (r, b)/d$ and $\hat{\mathbf{s}} = (1/M,\ \beta/M)$, so $\hat{\mathbf{m}}\cdot\hat{\mathbf{s}} = (r + b\beta)/(M d)$ and the two forms are **identical**. We verified this numerically over 5000 random geometries ($1.2 \le M \le 3$, $1 \le b \le 50$ m, ranges up to 1500 m); the largest relative difference was $6\times10^{-13}$.
+which is the difference of the blast and shock arrival times of Paper 1, and reports $d = \sqrt{r^2 + b^2}$. In the plane of Fig. 2, $\hat{\mathbf{m}} = (r, b)/d$ and $\hat{\mathbf{s}} = (1/M,\ \beta/M)$, so $\hat{\mathbf{m}}\cdot\hat{\mathbf{s}} = (r + b\beta)/(M d)$ and the two forms are **identical**. We verified this numerically over 5000 random geometries ($1.2 \le M \le 3$, $1 \le b \le 50$ m, ranges up to 1500 m); the largest relative difference was $6\times10^{-13}$.
 
 The practical difference lies in the inputs. The scalar form needs estimates of $M$ and $b$. In the reference implementation $M$ comes from the angle-only Method A (Section 2.5) and $b$ from the shockwave amplitude through an assumed absolute calibration of the microphone chain. Both add error that the vector form does not have. The processor design (Section 4.9) therefore uses the vector form.
 
@@ -208,13 +214,13 @@ $$
 
 and $M_C = 1/(\hat{\mathbf{s}}\cdot\hat{\mathbf{t}}_C)$.
 
-**Caliber.** Method B is run for every caliber in the library. Calibers without a real supersonic root are rejected; among the rest the one whose $M_B$ is closest to 2.25 is reported. The library currently holds two entries (5.56 NATO, $L_b = 23$ mm; 7.62 NATO, $L_b = 28$ mm) that share $\Delta P_0 = 7.5$ Pa at $b_0 = 50$ m, so the discriminating power is small. This stage is a demonstration of the approach, not a validated classifier.
+**Caliber.** Method B is run for every caliber in the library. Calibers without a real supersonic root are rejected; among the rest the one whose $M_B$ is closest to 2.25 is reported. The library currently holds two entries (5.56 NATO, $L_b = 23$ mm; 7.62 NATO, $L_b = 28$ mm) that share $\Delta P_0 = 7.5$ Pa at $b_0 = 50$ m, so the discriminating power is small. This stage is a demonstration of the approach, not a validated classifier. Fig. 1(e) shows the underlying feature: along the same trajectory, the peak-to-peak N-wave duration is 0.16, 0.23 and 0.33 ms for 5.56, 7.62 and 12.7 NATO. These calibers also leave the muzzle at different Mach numbers, so duration alone does not separate the effect of size from that of speed.
 
 ---
 
 ## 3. Reference Detector
 
-The reference detector is a four-stage Python pipeline (Fig. 2). It reads one multichannel `.wav` file and its own configuration file, `det_config.ini`, and nothing else. It defines the algorithms that the FPGA implements and is the baseline against which the hardware path is compared.
+The reference detector is a four-stage Python pipeline (Fig. 3). It reads one multichannel `.wav` file and its own configuration file, `det_config.ini`, and nothing else. It defines the algorithms that the FPGA implements and is the baseline against which the hardware path is compared.
 
 ```mermaid
 flowchart TD
@@ -226,7 +232,7 @@ flowchart TD
   E --> F
 ```
 
-**Fig. 2.** Reference detector. Stages 3 and 4 depend only on Stage 2 and can run in either order.
+**Fig. 3.** Reference detector. Stages 3 and 4 depend only on Stage 2 and can run in either order.
 
 ### 3.1 Separation Rule
 
@@ -319,7 +325,7 @@ Development is organized in four milestones:
 - **C:** control registers, result mailbox and processor software. Designed and budgeted.
 - **D:** the ADC interface and analog front end. Designed and budgeted.
 
-Nothing has yet been compiled with the vendor tools, so timing closure at 100 MHz is unverified.
+Nothing has yet been compiled with the vendor tools, so timing closure at 100 MHz is unverified. Fig. 4 shows the dataflow.
 
 ```mermaid
 flowchart LR
@@ -337,7 +343,7 @@ flowchart LR
   GE --> MB["result_mbox (C)"] --> CPU["HPS processor (C)"]
 ```
 
-**Fig. 3.** FPGA dataflow. Blocks marked (C) or (D) are planned. In Milestone B, `replay_src` plays recordings from a FIFO in place of the ADC.
+**Fig. 4.** FPGA dataflow. Blocks marked (C) or (D) are planned. In Milestone B, `replay_src` plays recordings from a FIFO in place of the ADC.
 
 ### 4.2 Sampling and Window Sizing
 
@@ -653,6 +659,12 @@ The FPGA adds 0.65 ms per window. Latency is set by acoustic propagation, the wi
 
 **Reverberation.** With the generator's `realistic` noise model, GCC-PHAT returned lags close to zero for every pair even with perfect windows, and Stage 1 reported a 5 ms spread of shockwave onsets. Inspection showed that this model applies an independent diffuse tail at each microphone, starting at the first sample and about 40 dB stronger than the direct sound. Every channel then carries a different random waveform, and no TDOA method can work. Open-field gunfire is dominated by the direct path, so this is a limitation of the noise model, not evidence against the detector. In development tests on that model, deconvolution with an impulse response estimated from a calibration sweep recovered TDOA errors below 5 µs in a case that failed with errors above 466 µs without it; blind weighted-prediction-error dereverberation [27] did not help, because one brief impulsive event provides too little reverberant excitation.
 
+**N-wave duration estimate.** In the worked example of Fig. 1, the reference detector's duration estimate (twice the time from the leading peak to the first zero crossing) gave 0.20, 0.34 and 0.32 ms for 5.56, 7.62 and 12.7 NATO, against model durations of 0.21, 0.27 and 0.38 ms, and so ranked 7.62 above 12.7. The time between the positive and negative extremes, which `sw_det` already extracts, gave 0.16, 0.23 and 0.33 ms: correctly ordered, and consistently about 0.05 ms shorter than the model because absorption rounds the fronts. Method B should use the peak-to-peak feature.
+
+**Subsonic shots.** For the 9 mm shot of Fig. 1(e), which has no shockwave, Stage 1 accepted the muzzle blast as a shockwave and reported no blast. The FPGA's N-wave qualification (Section 4.4) rejects it, because its symmetry ratio is 0.19 against the 0.5 limit. The reference detector needs the same test.
+
+**Amplitude calibration.** In the same example, Stage 3 derived a miss distance of 0.10 m from the shockwave amplitude, against 16 m true, because the recording's normalization does not match the assumed 175 Pa full scale. Its scalar range, 139.2 m, was nevertheless close to the vector-form result. With $b \to 0$ and $M = M_A = 1/(\hat{\mathbf{s}}\cdot\hat{\mathbf{m}})$, the scalar equation reduces exactly to $d = c\,\Delta t/(1 - \hat{\mathbf{m}}\cdot\hat{\mathbf{s}})$, so the two assumptions cancel. The agreement is a property of the equations, not evidence that the calibration is right; Methods B and C inherit the error in full.
+
 > **TODO:** add a direct-to-reverberant ratio and an initial time gap to the generator's reverberation model, then repeat the deconvolution experiment and report it properly or remove it.
 
 ### 7.7 Real Recordings
@@ -808,7 +820,7 @@ The largest remaining error is not in the signal processing. Bullet deceleration
 1. **Real data (§7.7, abstract, §10):** fill Tables 15–16 and every `[ ]`. Describe the field-trial setup (array survey, synchronization, weather, shooter ground truth).
 2. **Regenerate simulation results (§7.1–7.5)** from a tagged commit and archive the logs; the values here were transcribed from the repository's readme files.
 3. **Score the rest of the pipeline:** shockwave direction, range (vector form), Mach and caliber on the hardware path (§6.4).
-4. **Reference detector fixes** before quoting any Python numbers: `noise_min` (§7.6), range bracket at $r = b/\beta$ (§2.4), six-pair least squares, PHAT band masks.
+4. **Reference detector fixes** before quoting any Python numbers: `noise_min` (§7.6), range bracket at $r = b/\beta$ (§2.4), six-pair least squares, PHAT band masks, N-wave qualification and peak-to-peak $T_N$ (§7.6). Then regenerate Fig. 1(f).
 5. **N-wave model (§2.5):** resolve the $b^{-1/2}$ / $b^{1/2}$ laws in Method B against Whitham's $b^{-3/4}$ / $b^{1/4}$.
 6. **Bullet library (§3.1):** replace the detector's bullet constants with independently sourced values.
 7. **Reverberation (§7.6):** fix the generator's reverberation model and redo the deconvolution experiment, or drop the claim.
@@ -817,4 +829,4 @@ The largest remaining error is not in the signal processing. Bullet deceleration
 10. **Vendor tools:** run Quartus synthesis and timing analysis at 100 MHz; replace the Yosys estimates in Table 6.
 11. **Targets (§5.1):** confirm latency and burst-rate requirements; state clearly that the PILAR table is for two arrays.
 12. **References:** verify every entry marked *(verify)*; check [10], [13], [15] and [29] in particular. Citations are numbered in order of first appearance.
-13. **Figures:** Fig. 1 reuses `gsl_geometry.svg` from Paper 1; confirm that it renders next to this file, or redraw with $d$, $x$, $y$, $\hat{\mathbf{m}}$, $\hat{\mathbf{s}}$ labelled.
+13. **Figures:** Fig. 2 reuses `gsl_geometry.svg` from Paper 1; confirm that it renders next to this file, or redraw with $d$, $x$, $y$, $\hat{\mathbf{m}}$, $\hat{\mathbf{s}}$ labelled.
