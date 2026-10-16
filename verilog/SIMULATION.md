@@ -107,6 +107,7 @@ GSL/
     ├── xspec_phat/
     ├── gcc_engine/
     ├── stream/
+    ├── gsl_mm/              (Milestone C1: processor interface)
     └── old/                 (older RTL)
 ```
 
@@ -230,6 +231,34 @@ make
 
 ---
 
+## 6d. Run `gsl_mm` — Milestone C1 (~12 min)
+
+Run Milestone B in `stream` first: C1 compares against its outputs.
+
+```bash
+cd ../gsl_mm
+make
+```
+
+What happens:
+1. A Verilator build of `gsl_core` wrapped with the processor interface (registers, mailbox, replay DMA).
+2. Every Milestone B scenario is replayed from a simulated SDRAM through the DMA. A simulated processor reads every result over the bus, exactly as the Nios V will.
+3. Two stress tests: a processor too slow for the 900 rpm burst (mailbox overflow), and 3 passes of one recording in loop mode.
+
+**Expected:**
+
+```
+  s1         PASS  248 log lines identical (same order); x, y streams identical
+  ...
+  overflow   PASS  5 messages dropped and counted; 11 of 16 results arrived, all complete and identical to Milestone B
+  loop       PASS  3 passes, 3 SW / 3 MB events, 6 results; ...
+============================================================
+ Milestone C1: PASSED
+============================================================
+```
+
+---
+
 ## 7. Waveforms (optional)
 
 ```bash
@@ -262,6 +291,7 @@ Useful signals:
 | `make model` | Python model vs numpy (`fft2048` only) |
 | `make prepare` | Build the Milestone A jobs / Milestone B scenarios (`gcc_engine`, `stream`) |
 | `make SIM=icarus` | Use Icarus instead of Verilator (`stream` only) |
+| `make build` | Verilator build only (`gsl_mm`) |
 | `make clean` | Delete generated files (`.vvp`, waveforms, `tb_*.txt`) |
 
 ---

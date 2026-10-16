@@ -55,8 +55,8 @@ replay_src -> timebase -> fe_cond -+-> sw_ring (cap_ring) ----------------+
 | 13 | `peak_search` | `gcc_engine/` | built, verified (A, B) | 406 (SW) / 86 (MB) cycles per job |
 | — | `gcc_engine` | `gcc_engine/` | built, verified (A, B) | 65,239 (SW) / 64,919 (MB) cycles = 0.65 ms per job |
 | — | `gsl_core` | `stream/` | built, verified (B) | Milestone B top |
-| 14 | `result_mbox` | — | planned (C) | — |
-| 15 | `csr` | — | planned (C) | — |
+| 14 | `result_mbox` | `gsl_mm/` | built, verified (C1) as `gsl_mbox` | ≤ 1,430 cycles per message |
+| 15 | `csr` | `gsl_mm/` | built, verified (C1) in `gsl_mm` | — |
 | 16 | `raw_dma` | — | planned (C, optional) | — |
 
 ---
@@ -242,7 +242,7 @@ Unpack, 6 cross-spectra G_ab = X_b·conj(X_a), PHAT normalisation to magnitude 3
 
 Two passes over ±max_lag: per-pair argmax (first maximum, as numpy) and sidelobe (max \|r\| more than 2 samples from the peak); lag-window stream for the processor's sub-sample refinement. PSR = pk / side is computed by the processor. **406 (SW) / 86 (MB) cycles.**
 
-### 3.6 `result_mbox` *(planned, Milestone C)*
+### 3.6 `result_mbox` *(built in Milestone C1 as `gsl_mbox`; see `gsl_mm/c1_interface.md`)*
 
 As in v1: descriptor ring to the processor with IRQ. Contents now known from `gsl_core`'s outputs:
 - **SW / MB records:** id, timestamps, reference channel, features, reliability.
@@ -252,7 +252,7 @@ As in v1: descriptor ring to the processor with IRQ. Contents now known from `gs
 
 ---
 
-## 4. Infrastructure *(planned, Milestone C)*
+## 4. Infrastructure *(`csr` built in Milestone C1 inside `gsl_mm`; register map in `gsl_mm/c1_interface.md`)*
 
 ### 4.1 `csr`
 

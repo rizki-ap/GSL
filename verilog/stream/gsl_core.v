@@ -117,7 +117,11 @@ module gsl_core #(
     output wire [7:0]    lw_idx,
     output wire [107:0]  lw_data,
 
-    output wire          busy               // scheduler or engine still working
+    output wire          busy,              // scheduler or engine still working
+    // status taps for the processor interface (gsl_mm); no effect on behaviour
+    output wire          sw_noise_valid,
+    output wire          mb_noise_valid,
+    output wire [3:0]    job_mask_en_o
 );
     // ---------------- source + timebase ----------------
     wire        frame_tick, src_valid;
@@ -152,6 +156,8 @@ module gsl_core #(
                         .raddr(sw_raddr), .rdata(sw_rdata));
 
     wire sw_blank, sw_nv, mb_nv;
+    assign sw_noise_valid = sw_nv;
+    assign mb_noise_valid = mb_nv;
     wire sw_conf_valid, sw_qual;
     wire [63:0] sw_conf_ts;
     sw_det u_swd (
@@ -192,6 +198,7 @@ module gsl_core #(
     wire [6:0]  job_maxlag;
     wire [31:0] job_ts0;
     wire [3:0]  job_mask_en;
+    assign job_mask_en_o  = job_mask_en;
     wire [127:0] job_mask_lo, job_mask_hi;
 
     evt_sched u_sch (
