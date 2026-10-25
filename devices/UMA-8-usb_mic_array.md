@@ -21,3 +21,5 @@ Caveats:
 - Measure opposite outer mics with calipers to confirm 86 mm.
 
 Derived for TDOA: the largest baseline is 86 mm, so the maximum TDOA is about 251 µs (about 12 samples at 48 kHz). Adjacent spacing is 43 mm, so spatial aliasing starts above about 4 kHz.
+
+Reference : https://www.minidsp.com/images/documents/UMA-8%20v2%20User%20manual.pdf
