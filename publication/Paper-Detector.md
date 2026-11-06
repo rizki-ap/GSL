@@ -10,8 +10,6 @@ Author : Rizki Ardianto (edes) ;   Denny Darlis ;   Saladin Prawirasastra (bibin
 
 Telkom University, Bandung, Indonesia
 
-> **TODO:** confirm the author list and order for this paper.
-
 ---
 
 ## Abstract
@@ -170,12 +168,12 @@ where $\oplus$ denotes root-sum-square combination. Table 1 evaluates the angle 
 **Table 1.** Range sensitivity to direction error ($\delta\alpha = 1.3°$) and the corresponding delay.
 
 | $\alpha$ | Angle term | $\Delta t$ at 50 m | $\Delta t$ at 200 m |
-|---|---|---|---|
-| 90° | 2.3 % | 146 ms | 583 ms |
-| 60° | 3.9 % | 73 ms | 292 ms |
-| 45° | 5.5 % | 43 ms | 171 ms |
-| 30° | 8.5 % | 20 ms | 78 ms |
-| 25° | 10.2 % | 14 ms | 55 ms |
+| -------- | ---------- | ------------------ | ------------------- |
+| 90°      | 2.3 %      | 146 ms             | 583 ms              |
+| 60°      | 3.9 %      | 73 ms              | 292 ms              |
+| 45°      | 5.5 %      | 43 ms              | 171 ms              |
+| 30°      | 8.5 %      | 20 ms              | 78 ms               |
+| 25°      | 10.2 %     | 14 ms              | 55 ms               |
 
 Below $\alpha \approx 25°$ the angle term alone exceeds 10 %: the shooter is firing almost along the line to the array, and the equation is ill-conditioned whatever the hardware.
 
@@ -240,11 +238,11 @@ The detector is tested against signals from the generator of Paper 1. To keep th
 
 **Table 2.** Separation between generator, detector and scoring.
 
-| Role | May use | Must never use |
-|---|---|---|
-| Generator ("the world") | anything | — |
+| Role                                                  | May use                                          | Must never use                                                                |
+| ----------------------------------------------------- | ------------------------------------------------ | ----------------------------------------------------------------------------- |
+| Generator ("the world")                               | anything                                         | —                                                                             |
 | Detector (Python, RTL, FPGA configuration, processor) | its own configuration, its own code, the signals | generator configuration, generator constants or libraries, ground-truth files |
-| Scoring | ground truth, to measure errors | feeding ground truth back into a detector computation |
+| Scoring                                               | ground truth, to measure errors                  | feeding ground truth back into a detector computation                         |
 
 The detector legitimately knows its own installed geometry, its assumed speed of sound, its thresholds, its own reference library of ammunition types, and its own assumed hardware calibration. It does not know the shooter position, the trajectory, the weapon, the environment, or the generator's hardware model.
 
@@ -293,20 +291,20 @@ Stage 3 solves $\hat{\mathbf{s}}$ and $\hat{\mathbf{n}}$ with the square solutio
 
 **Table 3.** Reference detector parameters (`det_config.ini`).
 
-| Group | Parameter | Value |
-|---|---|---|
-| Geometry | Tetrahedron edge $L$ | 0.30 m |
-| Physics | Speed of sound $c$ | 343 m/s |
-| Detection | SW threshold $K_{\mathrm{sw}}$ | 10 × noise RMS |
-| | MB energy threshold $K_{\mathrm{mb}}$ | 20 × noise power |
-| | MB search $[\Delta t_{\min}, \Delta t_{\max}]$ | 10 ms – 5 s |
-| | Noise window | 5 ms |
-| TDOA | Interpolation factor | 16 |
-| | SW window | −3 ms … +15 ms |
-| | MB window | −6 ms … +80 ms |
-| | Maximum lag | 1 ms |
-| Calibration | Assumed peak at full scale | 175 Pa |
-| Deconvolution | Sweep, RIR length, $\lambda$ | 40 Hz–20 kHz / 1 s, 2 s, 0.01 (off by default) |
+| Group         | Parameter                                      | Value                                          |
+| ------------- | ---------------------------------------------- | ---------------------------------------------- |
+| Geometry      | Tetrahedron edge $L$                           | 0.30 m                                         |
+| Physics       | Speed of sound $c$                             | 343 m/s                                        |
+| Detection     | SW threshold $K_{\mathrm{sw}}$                 | 10 × noise RMS                                 |
+|               | MB energy threshold $K_{\mathrm{mb}}$          | 20 × noise power                               |
+|               | MB search $[\Delta t_{\min}, \Delta t_{\max}]$ | 10 ms – 5 s                                    |
+|               | Noise window                                   | 5 ms                                           |
+| TDOA          | Interpolation factor                           | 16                                             |
+|               | SW window                                      | −3 ms … +15 ms                                 |
+|               | MB window                                      | −6 ms … +80 ms                                 |
+|               | Maximum lag                                    | 1 ms                                           |
+| Calibration   | Assumed peak at full scale                     | 175 Pa                                         |
+| Deconvolution | Sweep, RIR length, $\lambda$                   | 40 Hz–20 kHz / 1 s, 2 s, 0.01 (off by default) |
 
 ---
 
@@ -351,10 +349,10 @@ The four channels are sampled simultaneously at 100 kHz. Shockwave energy extend
 
 **Table 4.** Window sizing. A single FFT size serves both paths. Circular wrap within $\pm\tau_{\max}$ is avoided because $N_{\mathrm{FFT}} \ge$ window + maximum lag.
 
-| Path | Rate | Window | Samples | + maximum lag | $N_{\mathrm{FFT}}$ |
-|---|---|---|---|---|---|
-| Shockwave | 100 kHz | −3 … +15 ms | 1800 | 100 | 2048 |
-| Muzzle blast | 20 kHz | −6 … +80 ms | 1720 | 20 | 2048 |
+| Path         | Rate    | Window      | Samples | + maximum lag | $N_{\mathrm{FFT}}$ |
+| ------------ | ------- | ----------- | ------- | ------------- | ------------------ |
+| Shockwave    | 100 kHz | −3 … +15 ms | 1800    | 100           | 2048               |
+| Muzzle blast | 20 kHz  | −6 … +80 ms | 1720    | 20            | 2048               |
 
 ### 4.3 Front-End Conditioning (`fe_cond`)
 
@@ -413,30 +411,30 @@ The peak-to-sidelobe ratio and the sub-sample refinement are computed by the pro
 
 **Table 5.** Measured cycle counts per job at 100 MHz.
 
-| Step | Cycles | Time |
-|---|---|---|
-| Load (ring → $z_0$, $z_1$, masks) | 2,052 | 21 µs |
-| 2 × FFT | 2 × 11,321 | 226 µs |
-| Cross-spectra and PHAT | 6,167 | 62 µs |
-| 3 × IFFT | 3 × 11,321 | 340 µs |
-| Peak search (SW / MB) | 406 / 86 | 4 / 1 µs |
-| **Job total (SW / MB)** | **65,239 / 64,919** | **0.65 ms** |
+| Step                              | Cycles              | Time        |
+| --------------------------------- | ------------------- | ----------- |
+| Load (ring → $z_0$, $z_1$, masks) | 2,052               | 21 µs       |
+| 2 × FFT                           | 2 × 11,321          | 226 µs      |
+| Cross-spectra and PHAT            | 6,167               | 62 µs       |
+| 3 × IFFT                          | 3 × 11,321          | 340 µs      |
+| Peak search (SW / MB)             | 406 / 86            | 4 / 1 µs    |
+| **Job total (SW / MB)**           | **65,239 / 64,919** | **0.65 ms** |
 
 ### 4.8 Resources
 
 **Table 6.** Indicative resources from Yosys (`synth_intel_alm -family cyclonev`) after area optimization. Vendor-tool results may differ.
 
-| Block | LUTs | FFs | M10K | 18×18 multipliers |
-|---|---|---|---|---|
-| `replay_src` | 292 | 106 | 7 | 0 |
-| `fe_cond` | 2,174 | 638 | 4 | 4 |
-| `mb_decim` | 1,056 | 325 | 3 | 2 |
-| `sw_det` | 3,048 | 1,596 | 0 | 8 |
-| `mb_det` | 2,546 | 1,463 | 1 | 6 |
-| `evt_sched` | 5,142 | 2,029 | 0 | 0 |
-| `gcc_engine` | 5,590 | 2,390 | 46 | 12 |
-| `cap_ring` × 2 | — | — | 72 | 0 |
-| **Total** | **19,848** | **8,547** | **133 / 553 (24 %)** | **32 (≈ 16 / 112 DSP)** |
+| Block          | LUTs       | FFs       | M10K                 | 18×18 multipliers       |
+| -------------- | ---------- | --------- | -------------------- | ----------------------- |
+| `replay_src`   | 292        | 106       | 7                    | 0                       |
+| `fe_cond`      | 2,174      | 638       | 4                    | 4                       |
+| `mb_decim`     | 1,056      | 325       | 3                    | 2                       |
+| `sw_det`       | 3,048      | 1,596     | 0                    | 8                       |
+| `mb_det`       | 2,546      | 1,463     | 1                    | 6                       |
+| `evt_sched`    | 5,142      | 2,029     | 0                    | 0                       |
+| `gcc_engine`   | 5,590      | 2,390     | 46                   | 12                      |
+| `cap_ring` × 2 | —          | —         | 72                   | 0                       |
+| **Total**      | **19,848** | **8,547** | **133 / 553 (24 %)** | **32 (≈ 16 / 112 DSP)** |
 
 The LUT count corresponds to roughly 10–13k ALMs, 25–32 % of the device. Area optimization reduced LUTs by 42 % and multipliers by 52 %. It moved delay lines and filter histories into block RAM, shared multipliers, serialized the decimator and halved the job queue to four entries, whose occupancy never exceeded one even at 900 rpm. The optimized design produced byte-identical logs on every scenario. Each block needs at least about 64 clocks per sample; real time provides 1000.
 
@@ -446,18 +444,18 @@ The processor receives one interrupt per completed job with the coarse lags, pea
 
 **Table 7.** Differences between the reference detector and the FPGA path.
 
-| Function | Reference detector | FPGA / processor path | Reason |
-|---|---|---|---|
-| Operation | One recording, one shot | Continuous stream, bursts | Real-time requirement |
-| SW acceptance | Amplitude threshold | Threshold + N-wave symmetry, duration, margin | Amplitude alone fires on blasts |
-| Noise floor | First 5 ms | 512-sample clean blocks with minimum | Threshold collapses when noise < 1 LSB |
-| MB arming | Settle once | Latched; held during SW qualification | Missed blast in burst; SW energy re-triggering |
-| Overlapping events | Not handled | Masks in both directions | Burst fire, short range |
-| PHAT band | All bins | SW 0.98–25 kHz, MB 98 Hz–2 kHz | Blast TDOA error (Section 7.1) |
-| Sub-sample refinement | 16 × zero-padded IFFT | 32-tap windowed sinc, 1/16 sample | Cost |
-| Direction solve | 3 pairs, square | 6 pairs, least squares, outlier rejection | Robustness |
-| Range | Scalar form ($M$, $b$) | Vector form, drag-aware | Calibration independence; drag |
-| Timestamps | No internal filter delay | Front-end and decimator delays removed from timestamps | $\Delta t$ accuracy |
+| Function              | Reference detector       | FPGA / processor path                                  | Reason                                         |
+| --------------------- | ------------------------ | ------------------------------------------------------ | ---------------------------------------------- |
+| Operation             | One recording, one shot  | Continuous stream, bursts                              | Real-time requirement                          |
+| SW acceptance         | Amplitude threshold      | Threshold + N-wave symmetry, duration, margin          | Amplitude alone fires on blasts                |
+| Noise floor           | First 5 ms               | 512-sample clean blocks with minimum                   | Threshold collapses when noise < 1 LSB         |
+| MB arming             | Settle once              | Latched; held during SW qualification                  | Missed blast in burst; SW energy re-triggering |
+| Overlapping events    | Not handled              | Masks in both directions                               | Burst fire, short range                        |
+| PHAT band             | All bins                 | SW 0.98–25 kHz, MB 98 Hz–2 kHz                         | Blast TDOA error (Section 7.1)                 |
+| Sub-sample refinement | 16 × zero-padded IFFT    | 32-tap windowed sinc, 1/16 sample                      | Cost                                           |
+| Direction solve       | 3 pairs, square          | 6 pairs, least squares, outlier rejection              | Robustness                                     |
+| Range                 | Scalar form ($M$, $b$)   | Vector form, drag-aware                                | Calibration independence; drag                 |
+| Timestamps            | No internal filter delay | Front-end and decimator delays removed from timestamps | $\Delta t$ accuracy                            |
 
 ---
 
@@ -476,12 +474,12 @@ A Monte Carlo study (20,000 trials per direction, azimuth swept 0–110°, indep
 **Table 8.** Direction error versus per-pair TDOA error.
 
 | $\sigma$ per pair | Azimuth 95 % (el 0°) | Azimuth 95 % (el 20°) | Elevation 95 % |
-|---|---|---|---|
-| 1 µs | 0.09° | 0.10° | 0.09° |
-| 2 µs | 0.18° | 0.20° | 0.18° |
-| 5 µs | 0.46° | 0.49° | 0.46° |
-| 10 µs | 0.91° | 0.98° | 0.92° |
-| 20 µs | 1.84° | 1.95° | 1.83° |
+| ----------------- | -------------------- | --------------------- | -------------- |
+| 1 µs              | 0.09°                | 0.10°                 | 0.09°          |
+| 2 µs              | 0.18°                | 0.20°                 | 0.18°          |
+| 5 µs              | 0.46°                | 0.49°                 | 0.46°          |
+| 10 µs             | 0.91°                | 0.98°                 | 0.92°          |
+| 20 µs             | 1.84°                | 1.95°                 | 1.83°          |
 
 The rule of thumb is about 0.1° per microsecond of pair TDOA error. Azimuth, not elevation, is the binding constraint. Systematic errors such as microphone position or front-end phase do not average down like random errors, so the allocations below are treated as combined bias and noise.
 
@@ -491,14 +489,14 @@ A per-pair budget of 10 µs (95 %) gives about 0.9° of azimuth. Combined with 1
 
 **Table 9.** Per-pair TDOA allocation (95 %).
 
-| Contributor | Allocation | Requirement |
-|---|---|---|
-| GCC-PHAT estimator (noise, reverberation) | 6 µs | 100 kHz, sub-sample refinement |
-| Front-end phase mismatch between channels | 3 µs | see below |
-| Microphone position tolerance | 3 µs | ±1 mm per capsule (1 mm ≈ 2.9 µs) |
-| Fixed-point FFT and PHAT | 1 µs | bit-true comparison |
-| ADC inter-channel skew | 0.5 µs | simultaneous-sampling ADC |
-| **Root-sum-square** | **7.4 µs** | ≈ 0.7° azimuth |
+| Contributor                               | Allocation | Requirement                       |
+| ----------------------------------------- | ---------- | --------------------------------- |
+| GCC-PHAT estimator (noise, reverberation) | 6 µs       | 100 kHz, sub-sample refinement    |
+| Front-end phase mismatch between channels | 3 µs       | see below                         |
+| Microphone position tolerance             | 3 µs       | ±1 mm per capsule (1 mm ≈ 2.9 µs) |
+| Fixed-point FFT and PHAT                  | 1 µs       | bit-true comparison               |
+| ADC inter-channel skew                    | 0.5 µs     | simultaneous-sampling ADC         |
+| **Root-sum-square**                       | **7.4 µs** | ≈ 0.7° azimuth                    |
 
 **Coupling high-pass.** A first-order high-pass with corner $f_c$ leads the signal by $\tau = \arctan(f_c/f)/(2\pi f)$. The current front-end notes specify a 16 Hz corner. At 300 Hz, where the blast carries much of its energy, that is a 28.3 µs lead, and a ±20 % capacitor spread makes it ±5.6 µs between channels. A 2 Hz corner reduces this to 3.5 ± 0.7 µs.
 
@@ -526,21 +524,21 @@ The detector is tested with signals from the generator of Paper 1 [17]. Each sce
 
 **Table 10.** Milestone B scenario set.
 
-| Name | Description | Noise floor |
-|---|---|---|
-| `r50` | 50 m (minimum range), miss 10 m | 0.005 Pa |
-| `s1` | 200 m, miss 10 m | 0.005 Pa |
-| `s2` | Shooter at (350, 250, 20) m | 0.05 Pa |
-| `s3` | 600 m, miss 25 m | 0.02 Pa |
-| `L1500_n05/n20/n50` | 1500 m (maximum range), miss 25 m | 0.05 / 0.2 / 0.5 Pa |
-| `d556_1000` | 5.56 with exponential drag, 1000 m, miss 25 m (subsonic at the array) | 0.05 Pa |
-| `d762_1000` | 7.62 with drag, 1000 m, miss 25 m (Mach 1.12 at emission) | 0.05 Pa |
-| `d127_1500` | 12.7 with drag, 1500 m, miss 25 m (Mach 1.44 at emission) | 0.05 Pa |
-| `m_tol` | Microphone positions off by up to 1 mm (generator only) | 0.05 Pa |
-| `m_sw` | Shockwave 1.8 × longer, 0.5 × amplitude | 0.05 Pa |
-| `m_mb` | Blast 0.4 × duration (sharper) | 0.05 Pa |
-| `m_hot` | Air at 40 °C ($c \approx 355$ m/s); detector assumes 343 m/s | 0.05 Pa |
-| `burst` | 8 shots at 900 rpm, `s1` geometry | 0.005 Pa |
+| Name                | Description                                                           | Noise floor         |
+| ------------------- | --------------------------------------------------------------------- | ------------------- |
+| `r50`               | 50 m (minimum range), miss 10 m                                       | 0.005 Pa            |
+| `s1`                | 200 m, miss 10 m                                                      | 0.005 Pa            |
+| `s2`                | Shooter at (350, 250, 20) m                                           | 0.05 Pa             |
+| `s3`                | 600 m, miss 25 m                                                      | 0.02 Pa             |
+| `L1500_n05/n20/n50` | 1500 m (maximum range), miss 25 m                                     | 0.05 / 0.2 / 0.5 Pa |
+| `d556_1000`         | 5.56 with exponential drag, 1000 m, miss 25 m (subsonic at the array) | 0.05 Pa             |
+| `d762_1000`         | 7.62 with drag, 1000 m, miss 25 m (Mach 1.12 at emission)             | 0.05 Pa             |
+| `d127_1500`         | 12.7 with drag, 1500 m, miss 25 m (Mach 1.44 at emission)             | 0.05 Pa             |
+| `m_tol`             | Microphone positions off by up to 1 mm (generator only)               | 0.05 Pa             |
+| `m_sw`              | Shockwave 1.8 × longer, 0.5 × amplitude                               | 0.05 Pa             |
+| `m_mb`              | Blast 0.4 × duration (sharper)                                        | 0.05 Pa             |
+| `m_hot`             | Air at 40 °C ($c \approx 355$ m/s); detector assumes 343 m/s          | 0.05 Pa             |
+| `burst`             | 8 shots at 900 rpm, `s1` geometry                                     | 0.005 Pa            |
 
 The four mismatch scenarios (`m_*`, all at 200 m) make the generator's world differ deliberately from the detector's assumptions; the detector configuration is not re-tuned for them. The drag model is $v(s) = v_0 e^{-s/\lambda}$ along the path, with the first-arriving shock found by Fermat's principle at the local Mach angle (Paper 1 and `python/drag_model.md`).
 
@@ -579,23 +577,23 @@ All ten jobs were bit-exact at every stage. The worst fixed-point TDOA error was
 
 **Table 11.** Milestone B results. The $\Delta t$ budget is $\max(500\ \text{µs},\ 0.5\,\%\ \text{of}\ \Delta t)$.
 
-| Scenario | Events SW / MB | Bit-exact | $\Delta t$ error / budget (µs) | Worst TDOA error SW / MB (µs) | MB bearing error az / el |
-|---|---|---|---|---|---|
-| `r50` 50 m | 1 / 1 | ✓ | 16 / 500 | 4.7 / 12.4 | 0.00° / 0.00° |
-| `s1` 200 m | 1 / 1 | ✓ | 142 / 1,618 | 4.1 / 7.4 | −0.19° / −0.33° |
-| `s2` (350, 250, 20) m | 1 / 1 | ✓ | 357 / 3,599 | 4.6 / 5.7 | −0.30° / −0.22° |
-| `s3` 600 m | 1 / 1 | ✓ | 400 / 4,919 | 5.3 / 5.0 | −0.19° / +0.25° |
-| `L1500_n05` | 1 / 1 | ✓ | 767 / 12,781 | 5.7 / 4.5 | −0.11° / +0.25° |
-| `L1500_n20` | 1 / 1 | ✓ | 717 / 12,781 | 6.4 / 12.2 | −0.28° / +0.75° |
-| `L1500_n50` | 1 / 1 | ✓ | 747 / 12,781 | 7.0 / **101.5** | +0.41° / **+2.00°** |
-| `burst` 8 shots | 8 / 8 | ✓ | 182 / 1,618 | 4.7 / 7.4 | ≤ 0.19° / ≤ 0.33° |
-| `d556_1000` (subsonic) | 0 / 1 | ✓ | — | — / 10.2 | +0.14° / −0.58° |
-| `d762_1000` | 1 / 1 | ✓ | 521 / 5,237 | 2.4 / 7.0 | +0.02° / +0.25° |
-| `d127_1500` | 1 / 1 | ✓ | 774 / 10,048 | 6.2 / 11.5 | +0.60° / +0.50° |
-| `m_tol` | 1 / 1 | ✓ | 145 / 1,618 | 5.0 / 7.8 | −0.22° / +0.50° |
-| `m_sw` | 1 / 1 | ✓ | 142 / 1,618 | 3.3 / 7.3 | −0.16° / −0.17° |
-| `m_mb` | 1 / 1 | ✓ | 142 / 1,618 | 4.7 / 5.6 | −0.08° / −0.17° |
-| `m_hot` | 1 / 1 | ✓ | 159 / 1,566 | 4.7 / 8.9 | −0.18° / −0.17° |
+| Scenario               | Events SW / MB | Bit-exact | $\Delta t$ error / budget (µs) | Worst TDOA error SW / MB (µs) | MB bearing error az / el |
+| ---------------------- | -------------- | --------- | ------------------------------ | ----------------------------- | ------------------------ |
+| `r50` 50 m             | 1 / 1          | ✓         | 16 / 500                       | 4.7 / 12.4                    | 0.00° / 0.00°            |
+| `s1` 200 m             | 1 / 1          | ✓         | 142 / 1,618                    | 4.1 / 7.4                     | −0.19° / −0.33°          |
+| `s2` (350, 250, 20) m  | 1 / 1          | ✓         | 357 / 3,599                    | 4.6 / 5.7                     | −0.30° / −0.22°          |
+| `s3` 600 m             | 1 / 1          | ✓         | 400 / 4,919                    | 5.3 / 5.0                     | −0.19° / +0.25°          |
+| `L1500_n05`            | 1 / 1          | ✓         | 767 / 12,781                   | 5.7 / 4.5                     | −0.11° / +0.25°          |
+| `L1500_n20`            | 1 / 1          | ✓         | 717 / 12,781                   | 6.4 / 12.2                    | −0.28° / +0.75°          |
+| `L1500_n50`            | 1 / 1          | ✓         | 747 / 12,781                   | 7.0 / **101.5**               | +0.41° / **+2.00°**      |
+| `burst` 8 shots        | 8 / 8          | ✓         | 182 / 1,618                    | 4.7 / 7.4                     | ≤ 0.19° / ≤ 0.33°        |
+| `d556_1000` (subsonic) | 0 / 1          | ✓         | —                              | — / 10.2                      | +0.14° / −0.58°          |
+| `d762_1000`            | 1 / 1          | ✓         | 521 / 5,237                    | 2.4 / 7.0                     | +0.02° / +0.25°          |
+| `d127_1500`            | 1 / 1          | ✓         | 774 / 10,048                   | 6.2 / 11.5                    | +0.60° / +0.50°          |
+| `m_tol`                | 1 / 1          | ✓         | 145 / 1,618                    | 5.0 / 7.8                     | −0.22° / +0.50°          |
+| `m_sw`                 | 1 / 1          | ✓         | 142 / 1,618                    | 3.3 / 7.3                     | −0.16° / −0.17°          |
+| `m_mb`                 | 1 / 1          | ✓         | 142 / 1,618                    | 4.7 / 5.6                     | −0.08° / −0.17°          |
+| `m_hot`                | 1 / 1          | ✓         | 159 / 1,566                    | 4.7 / 8.9                     | −0.18° / −0.17°          |
 
 Every scenario produced exactly one shockwave and one blast event per shot (blast only for the subsonic shot), with no late jobs, overflows or underflows. Every block was bit-exact. Worst per-pair TDOA errors were 2.4–7.0 µs for the shockwave and 4.5–12.4 µs for the blast, apart from one outlier. Blast bearing errors were at most 0.60° in azimuth and 0.75° in elevation in all but one case.
 
@@ -611,10 +609,10 @@ In the 8-shot 900 rpm burst at 200 m, all 8 shockwaves and all 8 blasts were det
 
 **Table 12.** Measured blast onset bias versus range. Shockwave onsets were within −50 … 0 µs.
 
-| Range | 50 m | 100 m | 200 m | ≈ 430 m | 600 m | 800 m | 1000 m | 1200 m | 1500 m |
-|---|---|---|---|---|---|---|---|---|---|
-| MB onset error | −0.03 ms | −0.08 ms | +0.09 ms | +0.31 ms | +0.39 ms | +0.49 ms | +0.53 ms | +0.65 ms | +0.75 ms |
-| As % of $\Delta t$ | 0.05 % | 0.05 % | 0.03 % | 0.04 % | 0.04 % | 0.04 % | 0.03 % | 0.03 % | 0.03 % |
+| Range              | 50 m     | 100 m    | 200 m    | ≈ 430 m  | 600 m    | 800 m    | 1000 m   | 1200 m   | 1500 m   |
+| ------------------ | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- | -------- |
+| MB onset error     | −0.03 ms | −0.08 ms | +0.09 ms | +0.31 ms | +0.39 ms | +0.49 ms | +0.53 ms | +0.65 ms | +0.75 ms |
+| As % of $\Delta t$ | 0.05 %   | 0.05 %   | 0.03 %   | 0.04 %   | 0.04 %   | 0.04 %   | 0.03 %   | 0.03 %   | 0.03 %   |
 
 Weaker, smoother blasts are detected progressively later, but the bias stays at or below 0.05 % of $\Delta t$. Timing is therefore a minor term in range error.
 
@@ -626,12 +624,12 @@ Weaker, smoother blasts are detected progressively later, but the bias stays at 
 
 **Table 13.** Range error of the constant-speed formula under bullet drag, perfect inputs.
 
-| Caliber | 200 m | 400 m | 600 m | 800 m | 1000 m | 1500 m |
-|---|---|---|---|---|---|---|
-| Constant speed (any) | 0.0 % | 0.0 % | 0.0 % | 0.0 % | 0.0 % | 0.0 % |
-| 5.56 with drag | +8 % | +21 % | +48 % | +118 % | no SW | no SW |
-| 7.62 with drag | +8 % | +19 % | +41 % | +91 % | +270 % | no SW |
-| 12.7 with drag | +3 % | +7 % | +11 % | +16 % | +24 % | +57 % |
+| Caliber              | 200 m | 400 m | 600 m | 800 m  | 1000 m | 1500 m |
+| -------------------- | ----- | ----- | ----- | ------ | ------ | ------ |
+| Constant speed (any) | 0.0 % | 0.0 % | 0.0 % | 0.0 %  | 0.0 %  | 0.0 %  |
+| 5.56 with drag       | +8 %  | +21 % | +48 % | +118 % | no SW  | no SW  |
+| 7.62 with drag       | +8 %  | +19 % | +41 % | +91 %  | +270 % | no SW  |
+| 12.7 with drag       | +3 %  | +7 %  | +11 % | +16 %  | +24 %  | +57 %  |
 
 Against the targets of ±20 % up to 600 m and ±30 % up to 1200 m, the constant-speed formula fails for 5.56 and 7.62 beyond about 400 m regardless of measurement accuracy. The exact percentages depend on the drag model, which is an approximate fit [26]; the conclusion that a drag-aware solver is needed does not.
 
@@ -639,17 +637,17 @@ Against the targets of ±20 % up to 600 m and ±30 % up to 1200 m, the constant-
 
 **Table 14.** End-to-end timeline from shockwave arrival. FPGA entries are measured in simulation; processor entries are estimates.
 
-| Event | 200 m ($\Delta t \approx$ 324 ms) | 1500 m ($\Delta t \approx$ 2.56 s) |
-|---|---|---|
-| Shockwave candidate | 0 | 0 |
-| Shockwave confirmed | 1 ms | 1 ms |
-| Shockwave window closed | 15 ms | 15 ms |
-| Shockwave TDOAs (FPGA) | 15.7 ms | 15.7 ms |
-| Early alert: shot and shockwave direction (estimate) | ≈ 85 ms | ≈ 85 ms |
-| Blast arrives | 324 ms | 2.56 s |
-| Blast window closed | 404 ms | 2.64 s |
-| Blast TDOAs (FPGA) | 404.7 ms | 2.64 s |
-| Final alert: bearing and range (estimate) | ≈ 475 ms | ≈ 2.71 s |
+| Event                                                | 200 m ($\Delta t \approx$ 324 ms) | 1500 m ($\Delta t \approx$ 2.56 s) |
+| ---------------------------------------------------- | --------------------------------- | ---------------------------------- |
+| Shockwave candidate                                  | 0                                 | 0                                  |
+| Shockwave confirmed                                  | 1 ms                              | 1 ms                               |
+| Shockwave window closed                              | 15 ms                             | 15 ms                              |
+| Shockwave TDOAs (FPGA)                               | 15.7 ms                           | 15.7 ms                            |
+| Early alert: shot and shockwave direction (estimate) | ≈ 85 ms                           | ≈ 85 ms                            |
+| Blast arrives                                        | 324 ms                            | 2.56 s                             |
+| Blast window closed                                  | 404 ms                            | 2.64 s                             |
+| Blast TDOAs (FPGA)                                   | 404.7 ms                          | 2.64 s                             |
+| Final alert: bearing and range (estimate)            | ≈ 475 ms                          | ≈ 2.71 s                           |
 
 The FPGA adds 0.65 ms per window. Latency is set by acoustic propagation, the window lengths and the processor.
 
@@ -675,18 +673,18 @@ Two public datasets are available in the repository: the Gunshot/Gunfire Audio D
 
 **Table 15.** Detection on public recordings.
 
-| Dataset / weapon | Recordings | SW detected | SW false (blast accepted as SW) | MB detected | N-wave symmetry (median) | Blast symmetry (median) |
-|---|---|---|---|---|---|---|
-| Ruger Mini-14 (.223) | `[ ]` | `[ ]` | `[ ]` | `[ ]` | `[ ]` | `[ ]` |
-| Ruger AR-556 (.223) | `[ ]` | `[ ]` | `[ ]` | `[ ]` | `[ ]` | `[ ]` |
-| Glock (9 mm) | `[ ]` | — | `[ ]` | `[ ]` | — | `[ ]` |
-| Cadre M16 | `[ ]` | `[ ]` | `[ ]` | `[ ]` | `[ ]` | `[ ]` |
+| Dataset / weapon     | Recordings | SW detected | SW false (blast accepted as SW) | MB detected | N-wave symmetry (median) | Blast symmetry (median) |
+| -------------------- | ---------- | ----------- | ------------------------------- | ----------- | ------------------------ | ----------------------- |
+| Ruger Mini-14 (.223) | `[ ]`      | `[ ]`       | `[ ]`                           | `[ ]`       | `[ ]`                    | `[ ]`                   |
+| Ruger AR-556 (.223)  | `[ ]`      | `[ ]`       | `[ ]`                           | `[ ]`       | `[ ]`                    | `[ ]`                   |
+| Glock (9 mm)         | `[ ]`      | —           | `[ ]`                           | `[ ]`       | —                        | `[ ]`                   |
+| Cadre M16            | `[ ]`      | `[ ]`       | `[ ]`                           | `[ ]`       | `[ ]`                    | `[ ]`                   |
 
 **Table 16.** Localization with the project array (Milestone D).
 
-| Range | Shots | Azimuth error 95 % | Elevation error 95 % | Range error | Notes |
-|---|---|---|---|---|---|
-| `[ ]` m | `[ ]` | `[ ]` | `[ ]` | `[ ]` | `[ ]` |
+| Range   | Shots | Azimuth error 95 % | Elevation error 95 % | Range error | Notes |
+| ------- | ----- | ------------------ | -------------------- | ----------- | ----- |
+| `[ ]` m | `[ ]` | `[ ]`              | `[ ]`                | `[ ]`       | `[ ]` |
 
 > **TODO:** describe the array survey, synchronization, environmental logging, and ground-truth method for the field trial, as required by Paper 1's Section 4.1.
 
