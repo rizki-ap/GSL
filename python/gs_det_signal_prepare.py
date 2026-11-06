@@ -31,6 +31,15 @@ Usage
   python gs_det_signal_prepare.py input.wav                     # det_config.ini
   python gs_det_signal_prepare.py input.wav my_det_config.ini
   python gs_det_signal_prepare.py input.wav my_det_config.ini -o my_result
+  python gs_det_signal_prepare.py input.wav -mic_config=UMA8         # miniDSP UMA-8 v2 (4 of its mics)
+
+-mic_config selects the installed microphone array ([mic_config.<NAME>] section of
+det_config.ini; default [geometry] mic_config = PilarV). A recording with exactly N channels
+(N = number of mics, e.g. the generator's output) is used as is. A recording with more channels
+is reduced with the preset's channel_map: those .wav channels (0-based) are taken as mics
+0..N-1 (e.g. channels 0,1,3,5 of an 8-channel UMA-8 RAW recording); without a channel_map the
+first N channels are used. The selected preset is recorded in the
+output .json, so Stages 2-4 pick it up without repeating the option.
 
 Output
 ------
@@ -88,11 +97,13 @@ def wiener_deconvolve(y, rir, reg=1e-2):
     return x_hat[:n]
 
 
-def apply_calibration_deconvolution(signals, fs, decon_cfg):
+def apply_calibration_deconvolution(signals, fs, decon_cfg, channel_map=None):
     """Load the calibration recording, estimate each channel's RIR from it,
     and deconvolve the corresponding live channel. Returns the deconvolved
     signals list, or the original signals unchanged (with a warning) if the
-    calibration file can't be used."""
+    calibration file can't be used. channel_map: the recording channels used
+    as mics (same mapping as the live recording), applied when the
+    calibration recording has more channels than there are mics."""
     try:
         cal_fs, cal_data = wavfile.read(decon_cfg["calibration_wav"])
     except FileNotFoundError:
@@ -105,6 +116,9 @@ def apply_calibration_deconvolution(signals, fs, decon_cfg):
         print(f"WARNING: calibration recording fs ({cal_fs}) != input fs ({fs}) -- "
               f"skipping deconvolution.", file=sys.stderr)
         return signals
+    if (cal_data.shape[1] > len(signals) and channel_map is not None
+            and max(channel_map) < cal_data.shape[1]):
+        cal_data = cal_data[:, channel_map]
     if cal_data.shape[1] != len(signals):
         print(f"WARNING: calibration recording has {cal_data.shape[1]} channels, "
               f"input has {len(signals)} -- skipping deconvolution.", file=sys.stderr)
@@ -128,10 +142,111 @@ def apply_calibration_deconvolution(signals, fs, decon_cfg):
     return deconvolved
 
 
-def load_det_config(path):
+# Microphone-array presets of the INSTALLED array (the detector's own hardware -- legitimately
+# known, see det_config.ini). Selected with -mic_config=<NAME> on the command line or
+# [geometry] mic_config = <NAME> in det_config.ini. Each preset is a [mic_config.<NAME>] section;
+# any key it does not set falls back to [geometry]. These built-in copies make the presets work
+# with an .ini that predates them; a [mic_config.<NAME>] section in the .ini overrides them key
+# by key. Deliberately an independent copy of the generator's presets (fairness boundary: no
+# imports from gs_gen_*).
+DEFAULT_MIC_CONFIG = "PilarV"
+MIC_CONFIG_PRESETS = {
+    # METRAVIB PILAR-V style 4-mic tetrahedron (edge [geometry] l_array, 0.30 m by default)
+    "PilarV": {"array_type": "tetrahedron"},
+    # miniDSP UMA-8 v2, 4 of its 7 mics: the centre mic (#0, origin) + ring mics #1, #3, #5
+    # (42.5 mm radius, 120 deg apart: an equilateral triangle, 73.6 mm side), all at z = 0.
+    # RAW firmware gives 8 channels: channel_map picks recording channels 0, 1, 3, 5.
+    "UMA8": {"array_type": "custom",
+             "mic_positions": "0,0,0; 0,0.0425,0; 0.036806,-0.02125,0; -0.036806,-0.02125,0",
+             "channel_map": "0,1,3,5",
+             "planar_source_side": "above"},
+}
+MIC_CONFIG_KEYS = ("array_type", "l_array", "mic_positions", "mic_positions_file",
+                   "channel_map", "planar_source_side")
+
+
+def add_mic_config_argument(parser):
+    """Add the -mic_config option (also --mic_config / --mic-config) to a stage's argparse parser."""
+    parser.add_argument("-mic_config", "--mic_config", "--mic-config", dest="mic_config", default=None,
+                        metavar="NAME",
+                        help="installed microphone array preset: PilarV (4-mic tetrahedron) or UMA8 "
+                             "(miniDSP UMA-8 v2: centre mic + ring mics #1, #3, #5) -- any [mic_config.NAME] section of the .ini. "
+                             "Default: the preset recorded in the upstream stage's .json (Stages 2-4), "
+                             "else [geometry] mic_config in the .ini (PilarV).")
+
+
+def upstream_mic_config(meta):
+    """mic_config recorded in an upstream DETECTION stage's .json (None if absent)."""
+    try:
+        return meta["config_used"]["geometry"].get("mic_config")
+    except (KeyError, TypeError, AttributeError):
+        return None
+
+
+def _parse_xyz_rows(text):
+    rows = []
+    for row in text.split(";"):
+        if not row.strip():
+            continue
+        v = [float(p) for p in row.split(",") if p.strip() != ""]
+        if len(v) != 3:
+            raise ValueError(f"mic_positions: expected 'x,y,z' per mic, got '{row.strip()}'")
+        rows.append(v)
+    return rows
+
+
+def _resolve_mic_config(cp, name):
+    """Geometry dict of the [mic_config.<name>] preset (case-insensitive), falling back to [geometry]."""
+    sections = {s.split(".", 1)[1].lower(): s for s in cp.sections() if s.startswith("mic_config.")}
+    key = str(name).strip().lower()
+    if key not in sections:
+        valid = ", ".join(s.split(".", 1)[1] for s in sections.values())
+        raise ValueError(f"unknown mic_config '{name}' -- valid: {valid} "
+                         f"(add a [mic_config.{name}] section to the .ini to define it)")
+    section = sections[key]
+    raw = {k: (cp.get(section, k) if cp.has_option(section, k) else cp.get("geometry", k))
+           for k in MIC_CONFIG_KEYS}
+
+    array_type = raw["array_type"].strip().lower()
+    if array_type not in ("tetrahedron", "custom"):
+        raise ValueError(f"mic_config {name}: array_type must be 'tetrahedron' or 'custom'")
+    mic_positions = None
+    if array_type == "custom":
+        if raw["mic_positions"].strip():
+            mic_positions = _parse_xyz_rows(raw["mic_positions"])
+        elif raw["mic_positions_file"].strip():
+            mic_positions = np.loadtxt(raw["mic_positions_file"].strip(), delimiter=",",
+                                       comments="#", ndmin=2).tolist()
+        if not mic_positions or len(mic_positions) < 2:
+            raise ValueError(f"mic_config {name}: array_type = custom needs mic_positions "
+                             f"or mic_positions_file with >= 2 mics")
+    n_mics = len(mic_positions) if mic_positions else 4
+    channel_map = [int(c) for c in raw["channel_map"].split(",") if c.strip() != ""] or None
+    if channel_map is not None and len(channel_map) != n_mics:
+        raise ValueError(f"mic_config {name}: channel_map has {len(channel_map)} entries "
+                         f"but the array has {n_mics} mics")
+    side = raw["planar_source_side"].strip().lower()
+    if side not in ("above", "below"):
+        raise ValueError(f"mic_config {name}: planar_source_side must be 'above' or 'below'")
+
+    geometry = dict(mic_config=section.split(".", 1)[1], array_type=array_type,
+                    l_array=float(raw["l_array"]), mic_positions=mic_positions,
+                    channel_map=channel_map, planar_source_side=side, n_mics=n_mics)
+    pos = build_mic_positions(dict(geometry=geometry))
+    geometry["mic_positions_used"] = pos.tolist()
+    geometry["aperture_m"] = array_aperture(pos, geometry)
+    return geometry
+
+
+def load_det_config(path, mic_config=None):
+    """mic_config: installed-array preset name ([mic_config.<NAME>] section); None uses
+    [geometry] mic_config."""
     cp = configparser.ConfigParser()
     cp.read_dict({
-        "geometry": {"l_array": "0.30"},
+        "geometry": {"mic_config": DEFAULT_MIC_CONFIG, "l_array": "0.30", "array_type": "tetrahedron",
+                     "mic_positions": "", "mic_positions_file": "", "channel_map": "",
+                     "planar_source_side": "above"},
+        **{f"mic_config.{k}": v for k, v in MIC_CONFIG_PRESETS.items()},
         "physics": {"speed_of_sound": "343.0"},
         "detection": {"sw_threshold_mult": "10.0", "mb_energy_threshold_mult": "20.0",
                       "dt_min_s": "0.01", "dt_max_s": "5.0", "noise_window_s": "0.005"},
@@ -161,7 +276,7 @@ def load_det_config(path):
     }
 
     return {
-        "geometry": dict(l_array=cp.getfloat("geometry", "l_array")),
+        "geometry": _resolve_mic_config(cp, mic_config or cp.get("geometry", "mic_config")),
         "physics": dict(speed_of_sound=cp.getfloat("physics", "speed_of_sound")),
         "detection": dict(sw_threshold_mult=cp.getfloat("detection", "sw_threshold_mult"),
                            mb_energy_threshold_mult=cp.getfloat("detection", "mb_energy_threshold_mult"),
@@ -192,6 +307,26 @@ def make_tetrahedron(edge_length):
                      [-0.816, -0.471, -0.333], [0.816, -0.471, -0.333]], dtype=float)
     scale = edge_length / np.linalg.norm(raw[0] - raw[1])
     return raw * scale
+
+
+def build_mic_positions(cfg):
+    """(N, 3) mic positions (m) of the installed array selected by mic_config."""
+    g = cfg["geometry"]
+    if g["array_type"] == "custom":
+        pos = np.asarray(g["mic_positions"], dtype=float)
+        if pos.ndim != 2 or pos.shape[1] != 3 or len(pos) < 2:
+            raise ValueError("mic positions must be an (N, 3) array with N >= 2")
+        return pos
+    return make_tetrahedron(g["l_array"])
+
+
+def array_aperture(mic_pos, geometry=None):
+    """Largest mic-to-mic distance (m) -- aperture / c is the largest possible TDOA.
+    For the tetrahedron this is l_array (its nominal edge)."""
+    if geometry is not None and geometry.get("array_type") == "tetrahedron":
+        return float(geometry["l_array"])
+    p = np.asarray(mic_pos, dtype=float)
+    return float(np.max(np.linalg.norm(p[:, None, :] - p[None, :, :], axis=-1)))
 
 
 def find_settled_point(signal, sw_idx, fs, noise_rms, settle_mult=3.0,
@@ -314,9 +449,10 @@ def main():
                               "(same sweep parameters as det_config.ini [deconvolution]). "
                               "Enables room-response deconvolution before onset detection -- "
                               "the single most effective fix for reverb corrupting TDOA.")
+    add_mic_config_argument(parser)
     args = parser.parse_args()
 
-    cfg = load_det_config(args.config)
+    cfg = load_det_config(args.config, args.mic_config)
     if args.output:
         cfg["output"]["basename"] = args.output
     if args.calibration_wav:
@@ -326,7 +462,30 @@ def main():
     fs, data = wavfile.read(args.input_wav)
     if data.ndim == 1:
         data = data[:, None]
+
+    # --- Map recording channels -> mics of the selected mic_config ---------------
+    geom = cfg["geometry"]
+    n_mics = geom["n_mics"]
+    n_in = data.shape[1]
+    # A recording with exactly n_mics channels (e.g. the generator's output) is used as is;
+    # channel_map only applies to a recording with MORE channels (e.g. 8-channel UMA-8 RAW).
+    channel_map = geom["channel_map"]
+    if n_in < n_mics:
+        raise SystemExit(f"[Det Stage 1] ERROR: {args.input_wav} has {n_in} channels but "
+                         f"mic_config {geom['mic_config']} has {n_mics} mics.")
+    if n_in == n_mics:
+        channel_map = list(range(n_mics))
+    elif channel_map is None:
+        print(f"[Det Stage 1] NOTE: {n_in} channels in the recording, using the first {n_mics} "
+              f"for mic_config {geom['mic_config']} (set channel_map to choose others).")
+        channel_map = list(range(n_mics))
+    elif max(channel_map) >= n_in or min(channel_map) < 0:
+        raise SystemExit(f"[Det Stage 1] ERROR: channel_map {channel_map} of mic_config "
+                         f"{geom['mic_config']} does not fit the {n_in}-channel {args.input_wav}.")
+    data = data[:, channel_map]
     n_channels = data.shape[1]
+    print(f"[Det Stage 1] mic_config = {geom['mic_config']} ({n_mics} mics, "
+          f"aperture {geom['aperture_m'] * 1e3:.1f} mm), recording channels {channel_map}")
     is_int = np.issubdtype(data.dtype, np.integer)
     full_scale = float(np.iinfo(data.dtype).max) if is_int else 1.0
     signals = [data[:, i].astype(np.float64) / full_scale for i in range(n_channels)]
@@ -338,7 +497,7 @@ def main():
             print("[Det Stage 1] WARNING: deconvolution.enabled=true but no "
                   "calibration_wav set -- skipping deconvolution.", file=sys.stderr)
         else:
-            signals = apply_calibration_deconvolution(signals, fs, cfg["deconvolution"])
+            signals = apply_calibration_deconvolution(signals, fs, cfg["deconvolution"], channel_map)
             decon_applied = True
 
     peak = max(np.abs(s).max() for s in signals)
@@ -356,12 +515,12 @@ def main():
     # from array geometry) is a sign the SW detection caught reverb or noise
     # rather than the real wavefront -- flagged here so downstream stages can
     # weight accordingly, rather than silently computing a wrong bearing.
-    def sw_consistency_flag(t_sw_list, fs_rate, l_array, c):
+    def sw_consistency_flag(t_sw_list, fs_rate, aperture, c):
         valid = [t for t in t_sw_list if t is not None]
         if len(valid) < 2:
             return False, float("nan")
         spread_us = (max(valid) - min(valid)) * 1e6
-        max_expected_us = l_array / c * 1e6   # aperture / c = max possible TDOA
+        max_expected_us = aperture / c * 1e6   # aperture / c = max possible TDOA
         return spread_us > 3 * max_expected_us, spread_us
 
     per_channel = []
@@ -382,11 +541,11 @@ def main():
         t_sw_all.append(result["t_sw"])
 
     sw_inconsistent, sw_spread_us = sw_consistency_flag(
-        t_sw_all, fs, cfg["geometry"]["l_array"], cfg["physics"]["speed_of_sound"])
+        t_sw_all, fs, cfg["geometry"]["aperture_m"], cfg["physics"]["speed_of_sound"])
     if sw_inconsistent:
         print(f"  WARNING: SW spread across channels = {sw_spread_us:.1f} us, "
               f"exceeds 3x the array's maximum possible TDOA "
-              f"({cfg['geometry']['l_array']/cfg['physics']['speed_of_sound']*1e6:.1f} us) -- "
+              f"({cfg['geometry']['aperture_m']/cfg['physics']['speed_of_sound']*1e6:.1f} us) -- "
               f"SW detection may have caught reverb or noise, not the true wavefront. "
               f"Consider enabling [deconvolution] in det_config.ini.")
 
@@ -400,6 +559,8 @@ def main():
         generated_at_utc=datetime.now(timezone.utc).isoformat(),
         stage="signal_prepared",
         source_wav=args.input_wav,
+        mic_config=geom["mic_config"],
+        source_channels_used=channel_map,
         prepared_wav=wav_path,
         deconvolution_applied=decon_applied,
         sample_rate_hz=fs,

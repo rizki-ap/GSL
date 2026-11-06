@@ -20,6 +20,14 @@ Usage
 -----
   python gs_det_shooter_locator.py det_result_tdoa.json                # det_config.ini
   python gs_det_shooter_locator.py det_result_tdoa.json my_det_config.ini
+  python gs_det_shooter_locator.py det_result_tdoa.json -mic_config=UMA8   # normally not needed
+
+-mic_config defaults to the preset recorded in *_tdoa.json (i.e. the one Stage 1 used).
+
+Planar arrays (e.g. UMA8, all mics at z = 0) only measure the in-plane part of the
+direction; the out-of-plane part is |k_perp| = sqrt(1 - |k_par|^2) with its sign taken from
+the preset's planar_source_side ('above' = sources on the +z side). Azimuth is fully
+determined; elevation is a magnitude-only estimate and is poorly conditioned near the horizon.
 """
 
 import argparse
@@ -29,12 +37,23 @@ from datetime import datetime, timezone
 import numpy as np
 from scipy.optimize import brentq
 
-from gs_det_signal_prepare import load_det_config, make_tetrahedron
+from gs_det_signal_prepare import (load_det_config, build_mic_positions,
+                                   add_mic_config_argument, upstream_mic_config)
 
 
-def solve_doa(mic_pos, tdoa_dict, c, ref_ch=0):
+def solve_doa(mic_pos, tdoa_dict, c, ref_ch=0, planar_source_side="above"):
     """Solve the plane-wave linear system delta_p . k_hat = c*tau for the
-    propagation direction k_hat, using the 3 pairs relative to ref_ch."""
+    propagation direction k_hat, using the N-1 pairs relative to ref_ch
+    (least squares; for the 4-mic tetrahedron this is the exact 3x3 solve).
+
+    Planar array (delta_p of rank 2, e.g. UMA8): only the in-plane component
+    k_par is observable. The out-of-plane component is sqrt(1 - |k_par|^2)
+    along the array normal (oriented towards +z), signed by planar_source_side:
+    'above' = source on the +normal side, so the wave travels towards -normal.
+
+    Returns (k_hat, |k|). |k| should be ~1.0 for consistent TDOA; for a planar
+    array it is |k_par| when that exceeds 1 (inconsistent TDOA), else 1.0."""
+    mic_pos = np.asarray(mic_pos, dtype=float)
     other = [i for i in range(len(mic_pos)) if i != ref_ch]
     delta_p = np.array([mic_pos[i] - mic_pos[ref_ch] for i in other])
     d = []
@@ -44,9 +63,26 @@ def solve_doa(mic_pos, tdoa_dict, c, ref_ch=0):
         sign = 1.0 if a == ref_ch else -1.0
         d.append(sign * tdoa_dict[key] * c)
     d = np.array(d)
-    k_vec = np.linalg.solve(delta_p, d)
-    k_hat = k_vec / np.linalg.norm(k_vec)
-    return k_hat, float(np.linalg.norm(k_vec))
+
+    _, s, vt = np.linalg.svd(delta_p)
+    rank = int(np.sum(s > s[0] * 1e-6))
+    if rank < 2:
+        raise ValueError("mic positions are collinear -- a direction cannot be resolved")
+    k_vec = np.linalg.lstsq(delta_p, d, rcond=None)[0]   # minimum-norm: in-plane if rank 2
+    if rank == 3:
+        k_hat = k_vec / np.linalg.norm(k_vec)
+        return k_hat, float(np.linalg.norm(k_vec))
+
+    normal = vt[2]
+    if normal[np.argmax(np.abs(normal))] < 0:             # orient towards +z (or the dominant axis)
+        normal = -normal
+    k_par = k_vec - np.dot(k_vec, normal) * normal
+    n_par = float(np.linalg.norm(k_par))
+    if n_par >= 1.0:
+        return k_par / n_par, n_par
+    k_perp = np.sqrt(1.0 - n_par ** 2) * (-1.0 if planar_source_side == "above" else 1.0)
+    k_hat = k_par + k_perp * normal
+    return k_hat / np.linalg.norm(k_hat), 1.0
 
 
 def pilar_v_exact(dt_val, b, M, c, r_max=5000.0):
@@ -71,16 +107,23 @@ def main():
                               "gs_det_classify_bullet.py hasn't already provided a measured one. "
                               "This is a genuine detector-design assumption (a typical/expected "
                               "engagement envelope), not generation ground truth.")
+    add_mic_config_argument(parser)
     args = parser.parse_args()
-
-    cfg = load_det_config(args.config)
-    if args.output:
-        cfg["output"]["basename"] = args.output
 
     with open(args.tdoa_json) as f:
         tdoa_data = json.load(f)
 
-    mic_pos = make_tetrahedron(cfg["geometry"]["l_array"])
+    cfg = load_det_config(args.config, args.mic_config or upstream_mic_config(tdoa_data))
+    if args.output:
+        cfg["output"]["basename"] = args.output
+
+    geom = cfg["geometry"]
+    mic_pos = build_mic_positions(cfg)
+    side = geom["planar_source_side"]
+    if tdoa_data.get("n_channels", len(mic_pos)) != len(mic_pos):
+        raise SystemExit(f"[Det Stage 3] ERROR: TDOA file has {tdoa_data['n_channels']} channels but "
+                         f"mic_config {geom['mic_config']} has {len(mic_pos)} mics.")
+    print(f"[Det Stage 3] mic_config = {geom['mic_config']} ({len(mic_pos)} mics)")
     c = cfg["physics"]["speed_of_sound"]
     ref_ch = tdoa_data["reference_channel"]
 
@@ -88,9 +131,10 @@ def main():
         generated_at_utc=datetime.now(timezone.utc).isoformat(),
         stage="shooter_location",
         source_tdoa_json=args.tdoa_json,
+        mic_config=geom["mic_config"],
     )
 
-    k_hat_sw, k_norm_sw = solve_doa(mic_pos, tdoa_data["tdoa_sw_s"], c, ref_ch)
+    k_hat_sw, k_norm_sw = solve_doa(mic_pos, tdoa_data["tdoa_sw_s"], c, ref_ch, side)
     result["k_hat_sw"] = k_hat_sw.tolist()
     result["k_hat_sw_norm_check"] = k_norm_sw  # should be ~1.0 for consistent TDOA
     print(f"[Det Stage 3] k_hat_sw = {k_hat_sw}  (|k| = {k_norm_sw:.4f}, should be ~1.0)")
@@ -100,7 +144,7 @@ def main():
               "cannot be computed, only the bullet trajectory direction (k_hat_sw) above.")
         result["bearing_available"] = False
     else:
-        n_hat_shooter, k_norm_mb = solve_doa(mic_pos, tdoa_data["tdoa_mb_s"], c, ref_ch)
+        n_hat_shooter, k_norm_mb = solve_doa(mic_pos, tdoa_data["tdoa_mb_s"], c, ref_ch, side)
         n_hat_shooter = -n_hat_shooter  # propagation direction -> direction TO the source
         az = float(np.degrees(np.arctan2(n_hat_shooter[1], n_hat_shooter[0])))
         el = float(np.degrees(np.arcsin(np.clip(n_hat_shooter[2], -1, 1))))

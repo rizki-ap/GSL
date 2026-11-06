@@ -3,8 +3,9 @@
 gs_det_tdoa.py
 ================
 DETECTION STAGE 2. Reads Stage 1's prepared signal + onset detections and
-computes GCC-PHAT time-difference-of-arrival for all 6 microphone pairs
-(C(4,2)) -- separately for the shockwave and muzzle blast events.
+computes GCC-PHAT time-difference-of-arrival for all C(N,2) microphone pairs
+(6 for the 4-mic PilarV tetrahedron and the 4-mic UMA8) -- separately for
+the shockwave and muzzle blast events.
 
 Critical design point: windows are extracted around a SHARED reference
 time (one reference channel's own detected onset), NOT each channel's own
@@ -18,6 +19,9 @@ Usage
 -----
   python gs_det_tdoa.py det_result_prepared.json                # det_config.ini
   python gs_det_tdoa.py det_result_prepared.json my_det_config.ini
+  python gs_det_tdoa.py det_result_prepared.json -mic_config=UMA8   # normally not needed
+
+-mic_config defaults to the preset recorded by Stage 1 in *_prepared.json.
 """
 
 import argparse
@@ -28,7 +32,7 @@ from itertools import combinations
 import numpy as np
 from scipy.io import wavfile
 
-from gs_det_signal_prepare import load_det_config
+from gs_det_signal_prepare import load_det_config, add_mic_config_argument, upstream_mic_config
 
 
 def gcc_phat(x1, x2, fs, interp_factor=16, max_lag_s=0.001):
@@ -85,23 +89,30 @@ def pick_reference_channel(per_channel):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Detection Stage 2: GCC-PHAT TDOA for all 6 mic pairs (SW and MB).")
+        description="Detection Stage 2: GCC-PHAT TDOA for all C(N,2) mic pairs (SW and MB).")
     parser.add_argument("prepared_json", help="Path to Stage 1's *_prepared.json")
     parser.add_argument("config", nargs="?", default="det_config.ini",
                          help="Path to detection .ini config (default: det_config.ini)")
     parser.add_argument("-o", "--output", default=None,
                          help="Output basename (overrides output.basename in config)")
+    add_mic_config_argument(parser)
     args = parser.parse_args()
-
-    cfg = load_det_config(args.config)
-    if args.output:
-        cfg["output"]["basename"] = args.output
 
     with open(args.prepared_json) as f:
         prep = json.load(f)
 
+    cfg = load_det_config(args.config, args.mic_config or upstream_mic_config(prep))
+    if args.output:
+        cfg["output"]["basename"] = args.output
+
     fs, data = wavfile.read(prep["prepared_wav"])
     n_channels = data.shape[1]
+    if n_channels != cfg["geometry"]["n_mics"]:
+        raise SystemExit(f"[Det Stage 2] ERROR: {prep['prepared_wav']} has {n_channels} channels but "
+                         f"mic_config {cfg['geometry']['mic_config']} has {cfg['geometry']['n_mics']} "
+                         f"mics -- re-run Stage 1 with the matching -mic_config.")
+    print(f"[Det Stage 2] mic_config = {cfg['geometry']['mic_config']} "
+          f"({n_channels} mics, {n_channels * (n_channels - 1) // 2} pairs)")
     signals = [data[:, i].astype(np.float64) for i in range(n_channels)]
     t_axis = np.arange(len(signals[0])) / fs
 

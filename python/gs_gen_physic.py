@@ -70,12 +70,30 @@ BULLET_LIBRARY = {
 }
 DRAG_MODELS = ("none", "exponential")
 
+# Microphone-array presets, selectable with -mic_config=<NAME> on the command line or
+# [geometry] mic_config = <NAME> in the .ini. Each preset is a [mic_config.<NAME>] section; any
+# geometry key it does not set (array_type, l_array, mic_positions, mic_positions_file) falls
+# back to [geometry]. These built-in copies make the presets work with an .ini that predates
+# them; a [mic_config.<NAME>] section in the .ini overrides them key by key.
+DEFAULT_MIC_CONFIG = "PilarV"
+MIC_CONFIG_PRESETS = {
+    # METRAVIB PILAR-V style 4-mic tetrahedron (edge [geometry] l_array, 0.30 m by default)
+    "PilarV": {"array_type": "tetrahedron"},
+    # miniDSP UMA-8 v2, 4 of its 7 mics: the centre mic (#0, origin) + ring mics #1, #3, #5
+    # (42.5 mm radius, 120 deg apart), all at z = 0 (devices/UMA-8-usb_mic_array.md; numbering and
+    # rotation from ODAS minidsp.cfg, verify on the board)
+    "UMA8": {"array_type": "custom",
+             "mic_positions": "0,0,0; 0,0.0425,0; 0.036806,-0.02125,0; -0.036806,-0.02125,0"},
+}
+MIC_CONFIG_KEYS = ("array_type", "l_array", "mic_positions", "mic_positions_file")
+
 
 # ===========================================================================
 # Configuration
 # ===========================================================================
 DEFAULTS = {
-    "geometry":    {"l_array": "0.30", "array_type": "tetrahedron",
+    "geometry":    {"mic_config": DEFAULT_MIC_CONFIG,
+                    "l_array": "0.30", "array_type": "tetrahedron",
                     "mic_positions": "", "mic_positions_file": ""},
     "adc":         {"fs": "100000", "bit_depth": "16",
                     "mic_lo": "40.0", "mic_hi": "20000.0"},
@@ -118,11 +136,12 @@ def _validate_config(cfg):
         if not cond:
             raise ValueError(f"config: {msg}")
     g, a, at = cfg["geometry"], cfg["adc"], cfg["atmosphere"]
-    need(g["l_array"] > 0, "geometry.l_array must be > 0")
-    need(g["array_type"] in ("tetrahedron", "custom"), "geometry.array_type must be 'tetrahedron' or 'custom'")
+    mc = f"mic_config {g['mic_config']}"
+    need(g["l_array"] > 0, f"{mc}: l_array must be > 0")
+    need(g["array_type"] in ("tetrahedron", "custom"), f"{mc}: array_type must be 'tetrahedron' or 'custom'")
     if g["array_type"] == "custom":
         need(g["mic_positions"] is not None and len(g["mic_positions"]) >= 2,
-             "geometry.array_type = custom needs mic_positions or mic_positions_file with >= 2 sensors")
+             f"{mc}: array_type = custom needs mic_positions or mic_positions_file with >= 2 sensors")
     need(a["fs"] > 0 and a["bit_depth"] >= 2, "adc.fs must be > 0 and adc.bit_depth >= 2")
     need(0 < a["mic_lo"] < a["mic_hi"], "adc.mic_lo must be > 0 and < adc.mic_hi")
     need(0.0 <= at["humidity_pct"] <= 100.0, "atmosphere.humidity_pct must be in [0, 100]")
@@ -147,25 +166,77 @@ def _validate_config(cfg):
          "muzzle_blast w_g_tnt, amp_scale and dur_scale must be > 0")
 
 
-def load_config(path):
+def add_mic_config_argument(parser):
+    """Add the -mic_config option (also --mic_config / --mic-config) to a stage's argparse parser."""
+    parser.add_argument("-mic_config", "--mic_config", "--mic-config", dest="mic_config", default=None,
+                        metavar="NAME",
+                        help="microphone array preset: PilarV (4-mic tetrahedron) or UMA8 (miniDSP "
+                             "UMA-8 v2: centre mic + ring mics #1, #3, #5) -- any [mic_config.NAME] section of the .ini. "
+                             "Default: [geometry] mic_config in the .ini (PilarV), or, for the noise "
+                             "and ADC stages, the preset recorded in the upstream .json.")
+
+
+def upstream_mic_config(meta):
+    """mic_config recorded in an upstream stage's .json (None if absent)."""
+    try:
+        return meta["config_used"]["geometry"].get("mic_config")
+    except (KeyError, TypeError, AttributeError):
+        return None
+
+
+def _mic_config_section(cp, name):
+    """Name of the [mic_config.<name>] section (case-insensitive match)."""
+    sections = {s.split(".", 1)[1].lower(): s for s in cp.sections() if s.startswith("mic_config.")}
+    key = str(name).strip().lower()
+    if key not in sections:
+        valid = ", ".join(s.split(".", 1)[1] for s in sections.values())
+        raise ValueError(f"unknown mic_config '{name}' -- valid: {valid} "
+                         f"(add a [mic_config.{name}] section to the .ini to define it)")
+    return sections[key]
+
+
+def load_config(path, mic_config=None):
     """Load an .ini file, falling back to DEFAULTS for anything missing (including a missing
     file). Returns a nested dict of resolved values (native types, lists instead of arrays),
     used for the computation AND echoed into every output .json for reproducibility.
 
-    Per-channel hardware: optional [analog_chain_ch0]..[analog_chain_ch3] sections override
+    mic_config: microphone-array preset name ([mic_config.<NAME>] section, see
+    MIC_CONFIG_PRESETS); None uses [geometry] mic_config.
+
+    Per-channel hardware: optional [analog_chain_ch0], [analog_chain_ch1], ... sections override
     mic_sensitivity_mv_per_pa / preamp_gain_db for that channel (anything not overridden uses
-    [analog_chain]); result in cfg["analog_chain_per_channel"], a list of 4 dicts (the noise and
-    ADC stages assume 4 channels)."""
+    [analog_chain]); result in cfg["analog_chain_per_channel"], one dict per sensor of the
+    selected array (at least 4)."""
     cp = configparser.ConfigParser()
     cp.read_dict(DEFAULTS)
+    cp.read_dict({f"mic_config.{k}": v for k, v in MIC_CONFIG_PRESETS.items()})
     if path is not None:
         if not cp.read(path):
             print(f"WARNING: config file '{path}' not found -- using built-in defaults.", file=sys.stderr)
 
+    def opt_vec(section, key):
+        s = cp.get(section, key).strip()
+        return _vec(s) if s else None
+
+    # ---- microphone array: the selected [mic_config.<NAME>] preset, falling back to [geometry]
+    mic_section = _mic_config_section(cp, mic_config or cp.get("geometry", "mic_config"))
+    geo = {k: (cp.get(mic_section, k) if cp.has_option(mic_section, k) else cp.get("geometry", k))
+           for k in MIC_CONFIG_KEYS}
+    array_type = geo["array_type"].strip().lower()
+    mic_positions = None
+    if array_type == "custom":
+        inline = geo["mic_positions"].strip()
+        fpath = geo["mic_positions_file"].strip()
+        if inline:
+            mic_positions = [_vec(row) for row in inline.split(";") if row.strip()]
+        elif fpath:
+            mic_positions = np.loadtxt(fpath, delimiter=",", comments="#", ndmin=2).tolist()
+    n_sensors = len(mic_positions) if mic_positions else 4
+
     nominal = dict(mic_sensitivity_mv_per_pa=cp.getfloat("analog_chain", "mic_sensitivity_mv_per_pa"),
                    preamp_gain_db=cp.getfloat("analog_chain", "preamp_gain_db"))
     per_channel = []
-    for i in range(4):
+    for i in range(max(4, n_sensors)):
         section, ch = f"analog_chain_ch{i}", dict(nominal)
         if cp.has_section(section):
             for key in ("mic_sensitivity_mv_per_pa", "preamp_gain_db"):
@@ -173,22 +244,9 @@ def load_config(path):
                     ch[key] = cp.getfloat(section, key)
         per_channel.append(ch)
 
-    def opt_vec(section, key):
-        s = cp.get(section, key).strip()
-        return _vec(s) if s else None
-
-    array_type = cp.get("geometry", "array_type").strip().lower()
-    mic_positions = None
-    if array_type == "custom":
-        inline = cp.get("geometry", "mic_positions").strip()
-        fpath = cp.get("geometry", "mic_positions_file").strip()
-        if inline:
-            mic_positions = [_vec(row) for row in inline.split(";") if row.strip()]
-        elif fpath:
-            mic_positions = np.loadtxt(fpath, delimiter=",", comments="#", ndmin=2).tolist()
-
     cfg = {
-        "geometry": dict(l_array=cp.getfloat("geometry", "l_array"), array_type=array_type,
+        "geometry": dict(mic_config=mic_section.split(".", 1)[1],
+                         l_array=float(geo["l_array"]), array_type=array_type,
                          mic_positions=mic_positions),
         "adc": dict(fs=cp.getint("adc", "fs"), bit_depth=cp.getint("adc", "bit_depth"),
                     mic_lo=cp.getfloat("adc", "mic_lo"), mic_hi=cp.getfloat("adc", "mic_hi")),
@@ -253,7 +311,7 @@ def make_tetrahedron(edge_length):
 
 
 def build_mic_positions(cfg):
-    """(N, 3) sensor positions from the config."""
+    """(N, 3) sensor positions of the selected mic_config preset."""
     g = cfg["geometry"]
     if g["array_type"] == "custom":
         pos = np.asarray(g["mic_positions"], dtype=float)

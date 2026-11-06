@@ -6,7 +6,7 @@ STAGE 3 of 3. Reads the noisy per-mic signal written by gs_gen_add_noise.py and
 applies everything that's a property of your SENSOR HARDWARE rather than
 the environment: mic frequency response (passband), sensitivity calibration
 against a real-recording target, and ADC bit-depth quantization. Writes the
-final 4-channel .wav.
+final N-channel .wav (one channel per mic of the selected mic_config).
 
 Why this is its own stage, not bundled into gs_gen_add_noise.py: mic/ADC response
 doesn't change when the environment does, and vice versa. Keeping them
@@ -21,9 +21,12 @@ Usage
   python gs_gen_apply_adc.py gunshot_sim_noisy.wav my_config.ini
   python gs_gen_apply_adc.py gunshot_sim_noisy.wav my_config.ini -o my_shot
 
+-mic_config is optional here (default: the preset recorded in the Stage-2 .json); it sizes the
+per-channel [analog_chain_chN] list and is echoed into the output .json.
+
 Output
 ------
-  <output>.wav   4-channel, 16-bit PCM -- the final "received" signal
+  <output>.wav   N-channel, 16-bit PCM -- the final "received" signal
   <output>.json  full chain of ground truth + noise + ADC processing details
 
 Only reads the [adc], [calibration], and [output] sections of the config --
@@ -95,6 +98,10 @@ def apply_adc(pa_signals, fs, cfg):
     peak_pa = max(np.abs(s).max() for s in filtered)
 
     if achain["enabled"]:
+        # channels beyond the per-channel list use the nominal [analog_chain] values
+        achain_pc = [achain_pc[i] if i < len(achain_pc) else
+                     dict(mic_sensitivity_mv_per_pa=achain["mic_sensitivity_mv_per_pa"],
+                          preamp_gain_db=achain["preamp_gain_db"]) for i in range(n_ch)]
         pa_to_norm_per_ch = [
             gp.gain_chain_scale(achain_pc[i]["mic_sensitivity_mv_per_pa"] / 1000.0,
                                  achain_pc[i]["preamp_gain_db"], achain["adc_vref_peak_v"])
@@ -168,13 +175,14 @@ def main():
                               "produces <output>.wav and <output>.json")
     parser.add_argument("--noisy-json", default=None,
                          help="Explicit path to the Stage-2 .json (auto-detected by default)")
+    gp.add_mic_config_argument(parser)
     args = parser.parse_args()
 
-    cfg = gp.load_config(args.config)
+    pa_signals, fs, noisy_meta = load_noisy_wav(args.noisy_wav, args.noisy_json)
+
+    cfg = gp.load_config(args.config, args.mic_config or gp.upstream_mic_config(noisy_meta))
     if args.output:
         cfg["output"]["basename"] = args.output
-
-    pa_signals, fs, noisy_meta = load_noisy_wav(args.noisy_wav, args.noisy_json)
 
     print(f"[Stage 3] Applying mic/ADC model to {args.noisy_wav} "
           f"({len(pa_signals)} channels, {fs} Hz)")

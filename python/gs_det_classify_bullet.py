@@ -28,6 +28,9 @@ Usage
 -----
   python gs_det_classify_bullet.py det_result_tdoa.json                # det_config.ini
   python gs_det_classify_bullet.py det_result_tdoa.json my_det_config.ini
+  python gs_det_classify_bullet.py det_result_tdoa.json -mic_config=UMA8   # normally not needed
+
+-mic_config defaults to the preset recorded in *_tdoa.json (i.e. the one Stage 1 used).
 """
 
 import argparse
@@ -37,7 +40,8 @@ from datetime import datetime, timezone
 import numpy as np
 from scipy.optimize import brentq
 
-from gs_det_signal_prepare import load_det_config, make_tetrahedron
+from gs_det_signal_prepare import (load_det_config, build_mic_positions,
+                                   add_mic_config_argument, upstream_mic_config)
 from gs_det_shooter_locator import solve_doa, pilar_v_exact
 
 
@@ -99,20 +103,25 @@ def main():
                          help="Path to detection .ini config (default: det_config.ini)")
     parser.add_argument("-o", "--output", default=None,
                          help="Output basename (overrides output.basename in config)")
+    add_mic_config_argument(parser)
     args = parser.parse_args()
-
-    cfg = load_det_config(args.config)
-    if args.output:
-        cfg["output"]["basename"] = args.output
 
     with open(args.tdoa_json) as f:
         tdoa_data = json.load(f)
 
-    mic_pos = make_tetrahedron(cfg["geometry"]["l_array"])
+    cfg = load_det_config(args.config, args.mic_config or upstream_mic_config(tdoa_data))
+    if args.output:
+        cfg["output"]["basename"] = args.output
+
+    mic_pos = build_mic_positions(cfg)
+    side = cfg["geometry"]["planar_source_side"]
+    if tdoa_data.get("n_channels", len(mic_pos)) != len(mic_pos):
+        raise SystemExit(f"[Det Stage 4] ERROR: TDOA file has {tdoa_data['n_channels']} channels but "
+                         f"mic_config {cfg['geometry']['mic_config']} has {len(mic_pos)} mics.")
     c = cfg["physics"]["speed_of_sound"]
     ref_ch = tdoa_data["reference_channel"]
 
-    k_hat_sw, _ = solve_doa(mic_pos, tdoa_data["tdoa_sw_s"], c, ref_ch)
+    k_hat_sw, _ = solve_doa(mic_pos, tdoa_data["tdoa_sw_s"], c, ref_ch, side)
 
     result = dict(
         generated_at_utc=datetime.now(timezone.utc).isoformat(),
@@ -128,7 +137,7 @@ def main():
             json.dump(result, f, indent=2)
         return
 
-    n_hat_shooter, _ = solve_doa(mic_pos, tdoa_data["tdoa_mb_s"], c, ref_ch)
+    n_hat_shooter, _ = solve_doa(mic_pos, tdoa_data["tdoa_mb_s"], c, ref_ch, side)
     n_hat_shooter = -n_hat_shooter
 
     T_N = tdoa_data.get("t_n_sw_ref_channel")

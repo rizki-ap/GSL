@@ -10,9 +10,13 @@ Usage
 -----
   python gs_gen_clean_signal.py gen_config.ini
   python gs_gen_clean_signal.py gen_config.ini -o my_shot
+  python gs_gen_clean_signal.py gen_config.ini -mic_config=UMA8     # miniDSP UMA-8 v2 (4 of its mics)
 
-Next stages: gs_gen_add_noise.py, then gs_gen_apply_adc.py (both assume 4 channels; for arrays
-with another number of sensors use the clean output directly).
+-mic_config selects the microphone array ([mic_config.<NAME>] section of the .ini; default
+[geometry] mic_config = PilarV, the 4-mic tetrahedron). One channel per mic.
+
+Next stages: gs_gen_add_noise.py, then gs_gen_apply_adc.py (any number of channels; they reuse
+the mic_config recorded in this stage's .json).
 
 Model summary (see gs_gen_physic.py): Mach-cone shock arrival in closed form, Whitham N-wave,
 Friedlander blast with Hopkinson-Cranz/Kinney-Graham scaling, speed of sound from temperature,
@@ -192,11 +196,13 @@ def main():
     ap = argparse.ArgumentParser(description="Stage 1: noiseless multichannel gunshot signal.")
     ap.add_argument("config", nargs="?", default="gen_config.ini")
     ap.add_argument("-o", "--output", default=None, help="output basename (overrides output.basename)")
+    gp.add_mic_config_argument(ap)
     args = ap.parse_args()
 
-    cfg = gp.load_config(args.config)
+    cfg = gp.load_config(args.config, args.mic_config)
     if args.output:
         cfg["output"]["basename"] = args.output
+    print(f"[Stage 1] mic_config = {cfg['geometry']['mic_config']}")
     signals, fs, gt = generate_clean(cfg)
 
     base = cfg["output"]["basename"]
@@ -214,8 +220,6 @@ def main():
     print(f"[Stage 1] Wrote {wav_path} ({len(signals)} ch, {fs} Hz, {len(signals[0]) / fs:.3f} s) and {json_path}")
     print(f"[Stage 1] shock at {ck['n_sensors_with_shock']}/{ck['n_sensors']} sensors; "
           f"min(blast - shock) = {ck['min_blast_minus_shock_s']} s; events overlap = {ck['events_overlap_any']}")
-    if len(signals) != 4:
-        print("[Stage 1] NOTE: the noise and ADC stages assume 4 channels.")
     print(f"[Stage 1] Next: python gs_gen_add_noise.py {wav_path} {args.config}")
 
 

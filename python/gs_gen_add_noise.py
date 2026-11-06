@@ -21,9 +21,12 @@ Usage
   python gs_gen_add_noise.py gunshot_sim_clean.wav my_config.ini
   python gs_gen_add_noise.py gunshot_sim_clean.wav my_config.ini -o my_shot
 
+The channel count follows the input .wav (one per mic); -mic_config is optional here (default:
+the preset recorded in the Stage-1 .json) and is only echoed into the output .json.
+
 Output
 ------
-  <output>_noisy.wav   4-channel, 32-bit FLOAT PCM, still in Pa units (like
+  <output>_noisy.wav   N-channel, 32-bit FLOAT PCM, still in Pa units (like
                         Stage 1's output -- NOT yet mic-filtered, calibrated,
                         or quantized, so precision is preserved for Stage 3)
   <output>_noisy.json  clean-signal ground truth + noise-processing details
@@ -115,13 +118,14 @@ def main():
                               "produces <output>_noisy.wav and <output>_noisy.json")
     parser.add_argument("--clean-json", default=None,
                          help="Explicit path to the Stage-1 .json (auto-detected by default)")
+    gp.add_mic_config_argument(parser)
     args = parser.parse_args()
 
-    cfg = gp.load_config(args.config)
+    ideal_signals, fs, clean_meta = load_clean_wav(args.clean_wav, args.clean_json)
+
+    cfg = gp.load_config(args.config, args.mic_config or gp.upstream_mic_config(clean_meta))
     if args.output:
         cfg["output"]["basename"] = args.output
-
-    ideal_signals, fs, clean_meta = load_clean_wav(args.clean_wav, args.clean_json)
 
     print(f"[Stage 2] Adding noise model '{cfg['noise']['model']}' to {args.clean_wav} "
           f"({len(ideal_signals)} channels, {fs} Hz)")
