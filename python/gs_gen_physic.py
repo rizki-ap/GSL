@@ -88,10 +88,39 @@ MIC_CONFIG_PRESETS = {
 MIC_CONFIG_KEYS = ("array_type", "l_array", "mic_positions", "mic_positions_file")
 
 
+# Which acoustic events stage 1 synthesises: [signal] components in the .ini, or
+# -components=<NAME> on the command line. The ground truth always describes both events;
+# its 'generated' flags say which ones are in the signal.
+COMPONENTS = ("both", "shockwave", "muzzle_blast")
+COMPONENT_ALIASES = {"both": "both", "all": "both",
+                     "shockwave": "shockwave", "shock": "shockwave", "sw": "shockwave",
+                     "muzzle_blast": "muzzle_blast", "muzzle": "muzzle_blast",
+                     "blast": "muzzle_blast", "mb": "muzzle_blast"}
+
+
+def normalize_components(name):
+    """'both' / 'shockwave' / 'muzzle_blast' (aliases: all; shock, sw; muzzle, blast, mb)."""
+    key = str(name).strip().lower().replace("-", "_")
+    if key not in COMPONENT_ALIASES:
+        raise ValueError(f"unknown components '{name}' -- valid: {', '.join(COMPONENTS)} "
+                         f"(aliases: sw, mb, blast)")
+    return COMPONENT_ALIASES[key]
+
+
+def add_components_argument(parser):
+    """Add the -components option (also --components) to stage 1's argparse parser."""
+    parser.add_argument("-components", "--components", dest="components", default=None,
+                        metavar="WHICH",
+                        help="acoustic events to synthesise: both (shockwave + muzzle blast), "
+                             "shockwave, or muzzle_blast (aliases: sw, mb, blast). "
+                             "Default: [signal] components in the .ini (both).")
+
+
 # ===========================================================================
 # Configuration
 # ===========================================================================
 DEFAULTS = {
+    "signal":      {"components": "both"},
     "geometry":    {"mic_config": DEFAULT_MIC_CONFIG,
                     "l_array": "0.30", "array_type": "tetrahedron",
                     "mic_positions": "", "mic_positions_file": ""},
@@ -195,13 +224,16 @@ def _mic_config_section(cp, name):
     return sections[key]
 
 
-def load_config(path, mic_config=None):
+def load_config(path, mic_config=None, components=None):
     """Load an .ini file, falling back to DEFAULTS for anything missing (including a missing
     file). Returns a nested dict of resolved values (native types, lists instead of arrays),
     used for the computation AND echoed into every output .json for reproducibility.
 
     mic_config: microphone-array preset name ([mic_config.<NAME>] section, see
     MIC_CONFIG_PRESETS); None uses [geometry] mic_config.
+
+    components: acoustic events to synthesise ('both', 'shockwave', 'muzzle_blast' or an
+    alias, see normalize_components); None uses [signal] components.
 
     Per-channel hardware: optional [analog_chain_ch0], [analog_chain_ch1], ... sections override
     mic_sensitivity_mv_per_pa / preamp_gain_db for that channel (anything not overridden uses
@@ -245,6 +277,7 @@ def load_config(path, mic_config=None):
         per_channel.append(ch)
 
     cfg = {
+        "signal": dict(components=normalize_components(components or cp.get("signal", "components"))),
         "geometry": dict(mic_config=mic_section.split(".", 1)[1],
                          l_array=float(geo["l_array"]), array_type=array_type,
                          mic_positions=mic_positions),

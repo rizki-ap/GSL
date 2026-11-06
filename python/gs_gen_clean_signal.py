@@ -11,9 +11,19 @@ Usage
   python gs_gen_clean_signal.py gen_config.ini
   python gs_gen_clean_signal.py gen_config.ini -o my_shot
   python gs_gen_clean_signal.py gen_config.ini -mic_config=UMA8     # miniDSP UMA-8 v2 (4 of its mics)
+  python gs_gen_clean_signal.py gen_config.ini -components=shockwave     # shockwave only
+  python gs_gen_clean_signal.py gen_config.ini -components=muzzle_blast  # muzzle blast only
 
 -mic_config selects the microphone array ([mic_config.<NAME>] section of the .ini; default
 [geometry] mic_config = PilarV, the 4-mic tetrahedron). One channel per mic.
+
+-components selects the acoustic events to synthesise: both (default, [signal] components in
+the .ini), shockwave, or muzzle_blast (aliases sw, mb, blast). With one event the time axis
+spans only that event's arrivals (pre_roll before the first, post_roll after the last). The
+ground truth still describes both events; per_mic[i].shockwave.generated and
+per_mic[i].muzzle_blast.generated say which ones are in the signal, and 'components' records
+the choice. Asking for the shockwave when no microphone receives one (subsonic bullet, or
+outside the Mach cone) is an error rather than a silent file.
 
 Next stages: gs_gen_add_noise.py, then gs_gen_apply_adc.py (any number of channels; they reuse
 the mic_config recorded in this stage's .json).
@@ -25,6 +35,7 @@ shockwave.mach_threshold and at sensors the Mach cone does not reach.
 """
 
 import argparse
+import sys
 import json
 from datetime import datetime, timezone
 
@@ -68,6 +79,9 @@ def generate_clean(cfg):
     shooter = origin.copy()
     shock_on = M > max(shk["mach_threshold"], 1.0)
     drag = bullet.get("drag", "none") == "exponential"
+    comps = cfg["signal"]["components"]
+    gen_sw = comps in ("both", "shockwave")
+    gen_mb = comps in ("both", "muzzle_blast")
 
     # ---- arrival times ------------------------------------------------------------------
     if drag:
@@ -82,9 +96,24 @@ def generate_clean(cfg):
     t_sw = np.array([g["t_arrive"] if (g is not None and g["in_cone"]) else np.nan for g in geo]) \
         if shock_on else np.full(n_mics, np.nan)
 
-    # ---- master time axis -------------------------------------------------------------------
-    t0 = np.nanmin(np.concatenate([t_sw, t_mb])) - tim["pre_roll"]
-    t1 = t_mb.max() + tim["post_roll"]
+    # ---- master time axis: spans the events being generated --------------------------------
+    if comps == "shockwave" and np.all(np.isnan(t_sw)):
+        if not shock_on:
+            why = f"the bullet is below the Mach threshold (Mach {M:.2f} <= {max(shk['mach_threshold'], 1.0):.2f})"
+        elif drag and any(g is not None and g["subsonic"] for g in geo):
+            why = "the bullet has slowed below the Mach threshold before its shock reaches the array"
+        else:
+            why = "no microphone is inside the Mach cone"
+        raise ValueError(f"components = shockwave, but no microphone receives a shockwave: {why}")
+    if comps == "shockwave":
+        t0 = np.nanmin(t_sw) - tim["pre_roll"]
+        t1 = np.nanmax(t_sw) + tim["post_roll"]
+    elif comps == "muzzle_blast":
+        t0 = t_mb.min() - tim["pre_roll"]
+        t1 = t_mb.max() + tim["post_roll"]
+    else:
+        t0 = np.nanmin(np.concatenate([t_sw, t_mb])) - tim["pre_roll"]
+        t1 = t_mb.max() + tim["post_roll"]
     t_master = np.arange(t0, t1, 1.0 / FS)
 
     # ---- waveforms -----------------------------------------------------------------------------
@@ -103,16 +132,21 @@ def generate_clean(cfg):
             g = geo[i]
             M_e = g["M_emit"] if drag else M          # local Mach at the emission point
             dP, T = gp.nwave_params(g["b"], M_e, c, bullet, shk["amp_scale"], shk["dur_scale"], p_atm)
-            sw = gp.nwave_waveform(t_master, g["t_arrive"], dP, T)
+            if gen_sw:
+                sw = gp.nwave_waveform(t_master, g["t_arrive"], dP, T)
+                if atmosphere is not None:
+                    sw = gp.spectral_absorption(sw, FS, g["R"], atmosphere)
             if atmosphere is not None:
-                sw = gp.spectral_absorption(sw, FS, g["R"], atmosphere)
                 att_sw[i] = float(gp.atmospheric_attenuation_db(1.0 / T, g["R"], **atmosphere))
             dP_sw[i], T_N[i] = dP, T
 
         dP, tp = gp.blast_params(r_mb[i], w_kg, mbc["amp_scale"], mbc["dur_scale"], p_atm)
-        mb = gp.friedlander_waveform(t_master, t_mb[i], dP, tp)
+        mb = np.zeros(len(t_master))
+        if gen_mb:
+            mb = gp.friedlander_waveform(t_master, t_mb[i], dP, tp)
+            if atmosphere is not None:
+                mb = gp.spectral_absorption(mb, FS, r_mb[i], atmosphere)
         if atmosphere is not None:
-            mb = gp.spectral_absorption(mb, FS, r_mb[i], atmosphere)
             att_mb[i] = float(gp.atmospheric_attenuation_db(1.0 / tp, r_mb[i], **atmosphere))
         dP_mb[i], t_pos[i] = dP, tp
         signals.append(sw + mb)
@@ -128,7 +162,7 @@ def generate_clean(cfg):
             reason = "subsonic_at_emission"
         elif not g["in_cone"]:
             reason = "outside_mach_cone"
-        sw_rec = dict(active=reason is None, inactive_reason=reason)
+        sw_rec = dict(active=reason is None, inactive_reason=reason, generated=bool(gen_sw and reason is None))
         if g is not None:
             sw_rec.update(along_track_a_m=g["a"], perp_dist_b_m=g["b"], emission_coord_s_m=g["s"])
         if drag and g is not None and g["M_emit"] is not None:
@@ -139,7 +173,7 @@ def generate_clean(cfg):
                           peak_dP_pa=float(dP_sw[i]), atmospheric_attenuation_db=float(att_sw[i]))
         per_mic.append(dict(
             mic_index=i, shockwave=sw_rec,
-            muzzle_blast=dict(t_arrive_s=float(t_mb[i]), range_m=float(r_mb[i]),
+            muzzle_blast=dict(generated=bool(gen_mb), t_arrive_s=float(t_mb[i]), range_m=float(r_mb[i]),
                               positive_phase_t_pos_s=float(t_pos[i]), peak_dP_pa=float(dP_mb[i]),
                               atmospheric_attenuation_db=float(att_mb[i]))))
 
@@ -152,6 +186,7 @@ def generate_clean(cfg):
         n_sensors_with_shock=int(active.sum()), n_sensors=int(n_mics))
 
     ground_truth = dict(
+        components=comps,
         mic_pos=mic_pos.tolist(), shooter_pos=shooter.tolist(), bullet_origin=origin.tolist(),
         trajectory_direction=v_hat.tolist(), bullet_speed_mps=float(M * c), mach=float(M),
         speed_of_sound_mps=float(c), wind_mps=(wind.tolist() if wind is not None else [0.0, 0.0, 0.0]),
@@ -197,13 +232,20 @@ def main():
     ap.add_argument("config", nargs="?", default="gen_config.ini")
     ap.add_argument("-o", "--output", default=None, help="output basename (overrides output.basename)")
     gp.add_mic_config_argument(ap)
+    gp.add_components_argument(ap)
     args = ap.parse_args()
 
-    cfg = gp.load_config(args.config, args.mic_config)
+    try:
+        cfg = gp.load_config(args.config, args.mic_config, args.components)
+    except ValueError as e:
+        sys.exit(f"[Stage 1] ERROR: {e}")
     if args.output:
         cfg["output"]["basename"] = args.output
-    print(f"[Stage 1] mic_config = {cfg['geometry']['mic_config']}")
-    signals, fs, gt = generate_clean(cfg)
+    print(f"[Stage 1] mic_config = {cfg['geometry']['mic_config']}, components = {cfg['signal']['components']}")
+    try:
+        signals, fs, gt = generate_clean(cfg)
+    except ValueError as e:
+        sys.exit(f"[Stage 1] ERROR: {e}")
 
     base = cfg["output"]["basename"]
     wav_path, json_path = f"{base}_clean.wav", f"{base}_clean.json"
