@@ -1,10 +1,36 @@
+import argparse
+
 import sounddevice as sd
 import soundfile as sf
 
-CHANNELS = 6
+CHANNELS = 6           # minimum channels the device must expose
 SAMPLE_RATE = 48000
-DURATION = 10          # seconds
+DURATION = 4          # default record duration (s), override with -t
 OUTPUT = "sample.wav"
+
+
+def positive_float(value):
+    t = float(value)
+    if t <= 0:
+        raise argparse.ArgumentTypeError("duration must be > 0")
+    return t
+
+
+parser = argparse.ArgumentParser(
+    description="Record all UMA-8 channels to a WAV file.", add_help=False)
+parser.add_argument("-h", "-help", "--help", action="help",
+                    help="show this help message and exit")
+parser.add_argument("-t", type=positive_float, default=DURATION, metavar="SEC",
+                    help=f"record duration in seconds (default: {DURATION})")
+parser.add_argument("-bits", type=int, choices=(16, 24), default=24,
+                    help="WAV sample resolution in bits (default: 24)")
+args = parser.parse_args()
+DURATION = args.t
+
+# sounddevice can't capture packed 24-bit into numpy, so 24-bit is captured
+# as int32 (top 24 bits used) and written as PCM_24.
+REC_DTYPE, WAV_SUBTYPE = {16: ("int16", "PCM_16"),
+                          24: ("int32", "PCM_24")}[args.bits]
 
 
 def find_uma8(min_channels):
@@ -31,11 +57,19 @@ if device is None:
 print(f"Using [{device}] {info['name']} "
       f"({sd.query_hostapis(info['hostapi'])['name']}, "
       f"{info['max_input_channels']} ch max)")
-print(f"Recording {DURATION}s, {CHANNELS} ch @ {SAMPLE_RATE} Hz...")
+
+# WASAPI shared mode only accepts the device's own channel count and rate,
+# so open the stream with exactly what Windows reports (8 ch on RAW firmware).
+# All channels are saved; the GSL pipeline picks mics via channel_map (0,1,3,5).
+rec_channels = info["max_input_channels"]
+if "WASAPI" in sd.query_hostapis(info["hostapi"])["name"]:
+    SAMPLE_RATE = int(info["default_samplerate"])
+
+print(f"Recording {DURATION}s, {rec_channels} ch @ {SAMPLE_RATE} Hz, {args.bits}-bit...")
 
 audio = sd.rec(int(DURATION * SAMPLE_RATE), samplerate=SAMPLE_RATE,
-               channels=CHANNELS, dtype="int16", device=device)
+               channels=rec_channels, dtype=REC_DTYPE, device=device)
 sd.wait()
 
-sf.write(OUTPUT, audio, SAMPLE_RATE, subtype="PCM_16")
+sf.write(OUTPUT, audio, SAMPLE_RATE, subtype=WAV_SUBTYPE)
 print(f"Saved {OUTPUT} with shape {audio.shape} (samples, channels)")
