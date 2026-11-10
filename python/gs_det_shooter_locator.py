@@ -134,15 +134,31 @@ def main():
         mic_config=geom["mic_config"],
     )
 
-    k_hat_sw, k_norm_sw = solve_doa(mic_pos, tdoa_data["tdoa_sw_s"], c, ref_ch, side)
-    result["k_hat_sw"] = k_hat_sw.tolist()
-    result["k_hat_sw_norm_check"] = k_norm_sw  # should be ~1.0 for consistent TDOA
-    print(f"[Det Stage 3] k_hat_sw = {k_hat_sw}  (|k| = {k_norm_sw:.4f}, should be ~1.0)")
+    sw_available = tdoa_data.get("sw_available", bool(tdoa_data.get("tdoa_sw_s")))
+    result["event_class"] = tdoa_data.get("event_class")
+    k_hat_sw = None
+    if sw_available:
+        k_hat_sw, k_norm_sw = solve_doa(mic_pos, tdoa_data["tdoa_sw_s"], c, ref_ch, side)
+        result["k_hat_sw"] = k_hat_sw.tolist()
+        result["k_hat_sw_norm_check"] = k_norm_sw  # should be ~1.0 for consistent TDOA
+        print(f"[Det Stage 3] k_hat_sw = {k_hat_sw}  (|k| = {k_norm_sw:.4f}, should be ~1.0)")
+    else:
+        print("[Det Stage 3] No shockwave: blast-only event -- bearing from the muzzle blast, "
+              "no bullet direction, Mach or range.")
 
     if not tdoa_data["mb_available"]:
         print("[Det Stage 3] No reliable muzzle-blast TDOA available -- bearing/range/position "
               "cannot be computed, only the bullet trajectory direction (k_hat_sw) above.")
         result["bearing_available"] = False
+        if k_hat_sw is not None:
+            # A close impulsive TEST sound (clap, balloon) also looks like a shockwave. For such a
+            # source -- not a bullet -- the direction to it is simply -k_hat_sw. Informational only.
+            src = -k_hat_sw
+            az_i = float(np.degrees(np.arctan2(src[1], src[0])))
+            el_i = float(np.degrees(np.arcsin(np.clip(src[2], -1, 1))))
+            result["impulse_source_direction_if_not_a_bullet"] = dict(azimuth_deg=az_i, elevation_deg=el_i)
+            print(f"[Det Stage 3] If this was a test impulse (clap, balloon), not a bullet: its source "
+                  f"is at azimuth={az_i:.2f} deg, elevation={el_i:.2f} deg.")
     else:
         n_hat_shooter, k_norm_mb = solve_doa(mic_pos, tdoa_data["tdoa_mb_s"], c, ref_ch, side)
         n_hat_shooter = -n_hat_shooter  # propagation direction -> direction TO the source
@@ -165,7 +181,7 @@ def main():
         # re-run this stage with --assumed-miss-distance from its output for a
         # better range if you want that refinement.)
         v_hat_approx = -n_hat_shooter
-        dot_A = float(np.dot(k_hat_sw, v_hat_approx))
+        dot_A = float(np.dot(k_hat_sw, v_hat_approx)) if k_hat_sw is not None else 0.0
         M_A = 1.0 / dot_A if dot_A > 0 else None
         result["mach_estimate_angle_only"] = M_A
 
@@ -206,7 +222,8 @@ def main():
                 print(f"[Det Stage 3] Range solve failed ({e}) -- bearing-only result reported.")
                 result["range_estimate_m"] = None
         else:
-            reason = "M<=1 (not physical)" if (M_A is None or M_A <= 1.01) else "no Dt available"
+            reason = ("no shockwave (blast only)" if k_hat_sw is None else
+                      "M<=1 (not physical)" if (M_A is None or M_A <= 1.01) else "no Dt available")
             print(f"[Det Stage 3] Skipping range solve ({reason}). "
                   "Run gs_det_classify_bullet.py for a more robust Mach/range estimate.")
             result["range_estimate_m"] = None

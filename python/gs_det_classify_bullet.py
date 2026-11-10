@@ -121,13 +121,21 @@ def main():
     c = cfg["physics"]["speed_of_sound"]
     ref_ch = tdoa_data["reference_channel"]
 
-    k_hat_sw, _ = solve_doa(mic_pos, tdoa_data["tdoa_sw_s"], c, ref_ch, side)
-
     result = dict(
         generated_at_utc=datetime.now(timezone.utc).isoformat(),
         stage="bullet_classification",
         source_tdoa_json=args.tdoa_json,
     )
+
+    if not tdoa_data.get("sw_available", bool(tdoa_data.get("tdoa_sw_s"))):
+        print("[Det Stage 4] No shockwave TDOA available (blast-only event) -- classification needs "
+              "the shockwave. Aborting.")
+        result["classification_available"] = False
+        with open(f"{cfg['output']['basename']}_classification.json", "w") as f:
+            json.dump(result, f, indent=2)
+        return
+
+    k_hat_sw, _ = solve_doa(mic_pos, tdoa_data["tdoa_sw_s"], c, ref_ch, side)
 
     if not tdoa_data["mb_available"]:
         print("[Det Stage 4] No muzzle-blast TDOA available -- classification needs bearing, "

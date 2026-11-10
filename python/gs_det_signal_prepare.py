@@ -7,7 +7,17 @@ gs_gen_apply_adc.py, or a real recording) and BLINDLY detects the
 shockwave (SW) and muzzle blast (MB) onset per channel -- no access to any
 generation-block ground truth, only the waveform itself and det_config.ini.
 
-Two-stage detector (adapted from the validated detect_events() approach):
+Two detection methods ([detection] method in det_config.ini):
+
+  classify (default) -- array-level event classifier (gs_det_events.py): every
+     event is labelled SW or MB by its frequency content (1-4 kHz vs
+     100-1000 Hz) and time/duration (impulsiveness, rise time, width). SW and
+     MB are each optional and the MB does not have to follow a SW, so blast-only
+     (subsonic, slowed bullet, shot fired away) and SW-only recordings are
+     handled. Each channel's onset is then refined around the array-level time.
+     Tuned on real recordings (Cipatat test range).
+
+  threshold -- the original per-channel two-stage detector:
   1. SW: first sample where |signal| exceeds sw_threshold_mult x the noise
      RMS measured from the first noise_window_s of the recording.
   2. MB: energy-based search within [dt_min_s, dt_max_s] AFTER the SW
@@ -60,6 +70,8 @@ from datetime import datetime, timezone
 import numpy as np
 from scipy.io import wavfile
 from scipy.signal import chirp as make_chirp
+
+import gs_det_events
 
 
 def make_calibration_sweep(fs, f0, f1, duration):
@@ -238,6 +250,17 @@ def _resolve_mic_config(cp, name):
     return geometry
 
 
+def _parse_band(text):
+    """'1000,4000' -> (1000.0, 4000.0)"""
+    lo, hi = (float(v) for v in text.split(","))
+    if not 0 < lo < hi:
+        raise ValueError(f"band '{text}': need 0 < low < high (Hz)")
+    return (lo, hi)
+
+
+DETECTION_METHODS = ("classify", "threshold")
+
+
 def load_det_config(path, mic_config=None):
     """mic_config: installed-array preset name ([mic_config.<NAME>] section); None uses
     [geometry] mic_config."""
@@ -248,8 +271,14 @@ def load_det_config(path, mic_config=None):
                      "planar_source_side": "above"},
         **{f"mic_config.{k}": v for k, v in MIC_CONFIG_PRESETS.items()},
         "physics": {"speed_of_sound": "343.0"},
-        "detection": {"sw_threshold_mult": "10.0", "mb_energy_threshold_mult": "20.0",
-                      "dt_min_s": "0.01", "dt_max_s": "5.0", "noise_window_s": "0.005"},
+        "detection": {"method": "classify",
+                      "sw_threshold_mult": "10.0", "mb_energy_threshold_mult": "20.0",
+                      "dt_min_s": "0.01", "dt_max_s": "5.0", "noise_window_s": "0.005",
+                      "sw_band_hz": "1000,4000", "mb_bands_hz": "100,1000; 300,1000",
+                      "sw_min_hf_snr_db": "25.0", "sw_min_crest_db": "12.0",
+                      "sw_max_rise_ms": "0.08", "sw_max_lf_width_ms": "3.0",
+                      "mb_min_lf_snr_db": "15.0", "mb_max_hf_excess_db": "10.0",
+                      "mb_in_tail": "false"},
         "tdoa": {"interp_factor": "16", "sw_window_pre_s": "0.003", "sw_window_post_s": "0.015",
                  "mb_window_pre_s": "0.006", "mb_window_post_s": "0.080", "max_lag_s": "0.001"},
         "bullet_reference_library": {"calibers": "5.56_NATO,7.62_NATO",
@@ -278,7 +307,18 @@ def load_det_config(path, mic_config=None):
     return {
         "geometry": _resolve_mic_config(cp, mic_config or cp.get("geometry", "mic_config")),
         "physics": dict(speed_of_sound=cp.getfloat("physics", "speed_of_sound")),
-        "detection": dict(sw_threshold_mult=cp.getfloat("detection", "sw_threshold_mult"),
+        "detection": dict(method=cp.get("detection", "method").strip().lower(),
+                           sw_band_hz=_parse_band(cp.get("detection", "sw_band_hz")),
+                           mb_bands_hz=[_parse_band(b) for b in cp.get("detection", "mb_bands_hz").split(";")
+                                        if b.strip()],
+                           sw_min_hf_snr_db=cp.getfloat("detection", "sw_min_hf_snr_db"),
+                           sw_min_crest_db=cp.getfloat("detection", "sw_min_crest_db"),
+                           sw_max_rise_ms=cp.getfloat("detection", "sw_max_rise_ms"),
+                           sw_max_lf_width_ms=cp.getfloat("detection", "sw_max_lf_width_ms"),
+                           mb_min_lf_snr_db=cp.getfloat("detection", "mb_min_lf_snr_db"),
+                           mb_max_hf_excess_db=cp.getfloat("detection", "mb_max_hf_excess_db"),
+                           mb_in_tail=cp.getboolean("detection", "mb_in_tail"),
+                           sw_threshold_mult=cp.getfloat("detection", "sw_threshold_mult"),
                            mb_energy_threshold_mult=cp.getfloat("detection", "mb_energy_threshold_mult"),
                            dt_min_s=cp.getfloat("detection", "dt_min_s"),
                            dt_max_s=cp.getfloat("detection", "dt_max_s"),
@@ -434,6 +474,70 @@ def detect_events(signal, t_axis, fs, sw_thresh_mult, mb_energy_thresh_mult,
                 T_N=T_N_meas, dP_mb=dP_mb_est, noise_rms=noise_rms, mb_reliable=mb_reliable)
 
 
+def _jsonable(d):
+    """Copy of an event-feature dict with plain Python numbers (for the .json)."""
+    if d is None:
+        return None
+    out = {}
+    for k, v in d.items():
+        if isinstance(v, (np.floating, np.integer)):
+            v = v.item()
+        out[k] = v
+    return out
+
+
+def classify_channels(normalized, t_axis, fs, cfg, noise_window_s):
+    """[detection] method = classify: array-level SW/MB classification (gs_det_events),
+    then each channel's onset/amplitude refined around the array-level event.
+    Returns (per_channel list in the same format as the threshold method, array summary)."""
+    det = cfg["detection"]
+    params = {k: det[k] for k in gs_det_events.DEFAULT_PARAMS}
+    x = np.stack(normalized, axis=1)
+    ev = gs_det_events.detect_sw_mb(x, fs, params)
+    max_tdoa = cfg["geometry"]["aperture_m"] / cfg["physics"]["speed_of_sound"]
+
+    per_channel = []
+    for i, sig in enumerate(normalized):
+        n_noise = max(1, int(noise_window_s * fs))
+        noise_rms = float(np.sqrt(np.mean(sig[:n_noise] ** 2)))
+        ch = dict(channel=i, sw_detected=False, mb_detected=False, mb_reliable=False,
+                  t_sw=None, t_mb=None, dP_sw=None, T_N=None, dP_mb=None, noise_rms=noise_rms)
+        if ev["t_sw"] is not None:
+            k = gs_det_events.channel_onset(sig, fs, ev["sw_idx"], max_tdoa + 0.0005, 1e-4,
+                                            det["sw_band_hz"])
+            # same refinement as the threshold method: snap to the local peak (~0.3 ms)
+            r = max(1, int(0.0003 * fs))
+            k = k + int(np.argmax(np.abs(sig[k:k + r])))
+            win_end = min(len(sig) - 1, k + int(0.010 * fs))
+            sw_win = sig[k:win_end]
+            zc = np.where(np.diff(np.sign(sw_win)))[0]
+            ch.update(sw_detected=True, t_sw=float(t_axis[k]),
+                      dP_sw=float(sw_win[0]) if len(sw_win) else None,
+                      T_N=float(2.0 * (t_axis[k + zc[0]] - t_axis[k])) if len(zc) else None)
+        if ev["t_mb"] is not None:
+            # search back as far as the array-level onset lies before its peak (+ max TDOA)
+            back = (ev["mb_idx"] / fs - ev["t_mb"]) + max_tdoa + 0.002
+            k = gs_det_events.channel_onset(sig, fs, ev["mb_idx"], max_tdoa + 0.005, 1e-3,
+                                            ev["mb_band"], back_s=back, causal=True)
+            mb_win = sig[k:k + int(0.005 * fs)]
+            ch.update(mb_detected=True, mb_reliable=True, t_mb=float(t_axis[k]),
+                      dP_mb=float(mb_win.max()) if len(mb_win) else None)
+        per_channel.append(ch)
+
+    summary = dict(
+        event_class=ev["event_class"], t_sw_s=ev["t_sw"], t_mb_s=ev["t_mb"],
+        dt_sw_to_mb_s=(ev["t_mb"] - ev["t_sw"]) if ev["event_class"] == "SW+MB" else None,
+        n_sw_in_burst=ev["n_sw"], sw_tail_end_s=ev["t_sw_tail_end"],
+        mb_band_hz=list(ev["mb_band"]) if ev["mb_band"] else None,
+        mb_may_be_hidden_in_sw_tail=bool(ev["mb_hidden_possible"]),
+        sw_features=_jsonable(ev["sw_features"]), mb_features=_jsonable(ev["mb_features"]),
+        events=[_jsonable({k: e[k] for k in ("t", "cls", "snr_hf", "snr_lf", "crest", "rise_ms",
+                                              "lf_width_ms", "hf_excess", "prominence")})
+                for e in ev["events"] if e["cls"] not in ("-", "SW-tail")],
+    )
+    return per_channel, summary
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Detection Stage 1: blind SW/MB onset detection and normalization.")
@@ -523,9 +627,26 @@ def main():
         max_expected_us = aperture / c * 1e6   # aperture / c = max possible TDOA
         return spread_us > 3 * max_expected_us, spread_us
 
+    if det["method"] not in DETECTION_METHODS:
+        raise SystemExit(f"[Det Stage 1] ERROR: [detection] method must be one of {DETECTION_METHODS}")
+    print(f"[Det Stage 1] Detection method: {det['method']}")
+    array_summary = None
     per_channel = []
     t_sw_all = []
-    for i in range(n_channels):
+    if det["method"] == "classify":
+        per_channel, array_summary = classify_channels(normalized, t_axis, fs, cfg, det["noise_window_s"])
+        a = array_summary
+        f = lambda v: "--" if v is None else f"{v:.5f}s"
+        print(f"[Det Stage 1] Array events: {a['event_class']}  (SW {f(a['t_sw_s'])}, MB {f(a['t_mb_s'])}"
+              + (f", MB band {a['mb_band_hz'][0]:g}-{a['mb_band_hz'][1]:g} Hz" if a["mb_band_hz"] else "")
+              + (f", burst of {a['n_sw_in_burst']} SWs" if a["n_sw_in_burst"] > 1 else "") + ")")
+        if a["event_class"] == "SW only" and a["mb_may_be_hidden_in_sw_tail"]:
+            print("  NOTE: no MB after the SW's echo tail; an MB inside the tail can't be told apart from "
+                  "echoes (set mb_in_tail = true for very close shots).")
+        for ch in per_channel:
+            print(f"  Ch{ch['channel']}: t_sw={f(ch['t_sw'])}  t_mb={f(ch['t_mb'])}")
+            t_sw_all.append(ch["t_sw"])
+    for i in (range(n_channels) if det["method"] == "threshold" else []):
         result = detect_events(normalized[i], t_axis, fs,
                                 det["sw_threshold_mult"], det["mb_energy_threshold_mult"],
                                 det["dt_min_s"], det["dt_max_s"], det["noise_window_s"])
@@ -569,6 +690,11 @@ def main():
         normalization_peak=float(peak),
         sw_spread_us=float(sw_spread_us),
         sw_consistency_flag=bool(sw_inconsistent),
+        detection_method=det["method"],
+        event_class=(array_summary["event_class"] if array_summary else
+                     ("SW+MB" if any(c.get("mb_detected") and c.get("mb_reliable") for c in per_channel)
+                      else "SW only") if any(c.get("sw_detected") for c in per_channel) else "none"),
+        array_events=array_summary,
         config_used=cfg,
         per_channel=per_channel,
     )

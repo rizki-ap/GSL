@@ -5,7 +5,9 @@ gs_det_tdoa.py
 DETECTION STAGE 2. Reads Stage 1's prepared signal + onset detections and
 computes GCC-PHAT time-difference-of-arrival for all C(N,2) microphone pairs
 (6 for the 4-mic PilarV tetrahedron and the 4-mic UMA8) -- separately for
-the shockwave and muzzle blast events.
+the shockwave and muzzle blast events. Either event may be missing (Stage 1's
+classify method reports SW only / MB only): only the TDOAs of the events that
+were found are computed, e.g. MB only -> bearing without range downstream.
 
 Critical design point: windows are extracted around a SHARED reference
 time (one reference channel's own detected onset), NOT each channel's own
@@ -78,10 +80,12 @@ def extract_window(signal, t_axis, t_center, t_pre, t_post):
 
 def pick_reference_channel(per_channel):
     """Prefer a channel with both SW and reliable MB detected; fall back to
-    SW-only if none have reliable MB."""
+    SW-only, then to MB-only (blast-only recordings)."""
     candidates = [c for c in per_channel if c.get("sw_detected") and c.get("mb_detected") and c.get("mb_reliable")]
     if not candidates:
         candidates = [c for c in per_channel if c.get("sw_detected")]
+    if not candidates:
+        candidates = [c for c in per_channel if c.get("mb_detected") and c.get("mb_reliable")]
     if not candidates:
         return None
     return min(candidates, key=lambda c: c["channel"])
@@ -118,10 +122,14 @@ def main():
 
     ref = pick_reference_channel(prep["per_channel"])
     if ref is None:
-        raise RuntimeError("No channel had a usable SW detection -- cannot compute TDOA.")
+        raise SystemExit("[Det Stage 2] No shockwave or muzzle blast was detected in Stage 1 "
+                         f"(event_class = {prep.get('event_class')}) -- nothing to compute TDOA on.")
     ref_ch = ref["channel"]
+    sw_used = bool(ref.get("sw_detected"))
+    t_sw_txt = f"{ref['t_sw']:.5f}s" if sw_used else "none"
     print(f"[Det Stage 2] Reference channel: {ref_ch} "
-          f"(t_sw={ref['t_sw']:.5f}s, mb_reliable={ref.get('mb_reliable')})")
+          f"(t_sw={t_sw_txt}, mb_reliable={ref.get('mb_reliable')}, "
+          f"events: {prep.get('event_class', 'n/a')})")
 
     tw = cfg["tdoa"]
     pairs = list(combinations(range(n_channels), 2))
@@ -130,7 +138,7 @@ def main():
     print(f"[Det Stage 2] TDOA method: {method_label}")
 
     tdoa_sw = {}
-    for (a, b) in pairs:
+    for (a, b) in (pairs if sw_used else []):
         if use_peak_timing:
             ch_a = prep["per_channel"][a]
             ch_b = prep["per_channel"][b]
@@ -173,7 +181,10 @@ def main():
     else:
         print("[Det Stage 2] WARNING: reference channel's MB detection wasn't reliable -- "
               "skipping MB TDOA (would be meaningless windowed around a bad onset guess).")
-    print("SW TDOA (us):")
+    if not sw_used:
+        print("[Det Stage 2] No shockwave detected -- MB TDOA only (bearing, no range).")
+    if tdoa_sw:
+        print("SW TDOA (us):")
     for k, v in tdoa_sw.items():
         print(f"  ({k}): {v*1e6:+.3f}")
     if tdoa_mb:
@@ -184,7 +195,7 @@ def main():
     # Consistency check: for a truly consistent set, tau(1,2) should ~= tau(0,2)-tau(0,1), etc.
     # Reported for transparency, not used to "correct" anything.
     consistency_sw = {}
-    for (a, b) in pairs:
+    for (a, b) in (pairs if tdoa_sw else []):
         if a == 0:
             continue
         expected = tdoa_sw.get(f"0,{b}", 0) - tdoa_sw.get(f"0,{a}", 0)
@@ -192,7 +203,7 @@ def main():
         consistency_sw[f"{a},{b}"] = float(actual - expected)
 
     out_json = f"{cfg['output']['basename']}_tdoa.json"
-    dt_sw_to_mb = (ref["t_mb"] - ref["t_sw"]) if mb_used else None
+    dt_sw_to_mb = (ref["t_mb"] - ref["t_sw"]) if (mb_used and sw_used) else None
     meta = dict(
         generated_at_utc=datetime.now(timezone.utc).isoformat(),
         stage="tdoa",
@@ -200,7 +211,9 @@ def main():
         reference_channel=ref_ch,
         sample_rate_hz=fs,
         n_channels=n_channels,
+        sw_available=bool(tdoa_sw),
         mb_available=bool(tdoa_mb),
+        event_class=prep.get("event_class"),
         dt_sw_to_mb_s=dt_sw_to_mb,
         dp_sw_ref_channel=ref.get("dP_sw"),
         t_n_sw_ref_channel=ref.get("T_N"),
