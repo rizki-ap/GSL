@@ -3,11 +3,21 @@
 gs_det_tdoa.py
 ================
 DETECTION STAGE 2. Reads Stage 1's prepared signal + onset detections and
-computes GCC-PHAT time-difference-of-arrival for all C(N,2) microphone pairs
+computes the time difference of arrival (TDOA) for all C(N,2) microphone pairs
 (6 for the 4-mic arrays: PILAR-V, Tetrahedral-0,3 and UMA8) -- separately for
 the shockwave and muzzle blast events. Either event may be missing (Stage 1's
 classify method reports SW only / MB only): only the TDOAs of the events that
 were found are computed, e.g. MB only -> bearing without range downstream.
+
+TDOA method ([tdoa] method):
+  xcorr     (default, Nov 2026) plain cross-correlation of the band-passed event
+            (SW xcorr_sw_band_hz, MB xcorr_mb_band_hz), short Tukey-tapered windows,
+            sinc-upsampled x interp_factor, positive peak only.
+  gcc_phat  GCC-PHAT on the raw windows (the original method). It fails on real
+            recordings whose background noise is the same on all channels (Cipatat:
+            correlation 0.8-0.9): PHAT whitens the spectrum and locks onto that zero-delay
+            noise, giving ~0 us for every pair. Fine for the generator's independent noise.
+  A deconvolved signal (Stage 1 deconvolution) always uses peak timing.
 
 Critical design point: windows are extracted around a SHARED reference
 time (one reference channel's own detected onset), NOT each channel's own
@@ -24,6 +34,7 @@ Usage
   python gs_det_tdoa.py det_result_prepared.json -mic_config=UMA8   # normally not needed
 
 -mic_config defaults to the preset recorded by Stage 1 in *_prepared.json.
+  python gs_det_tdoa.py det_result_prepared.json --method gcc_phat   # the original method
 """
 
 import argparse
@@ -33,6 +44,8 @@ from itertools import combinations
 
 import numpy as np
 from scipy.io import wavfile
+from scipy.signal import butter, resample, sosfiltfilt
+from scipy.signal.windows import tukey
 
 from gs_det_signal_prepare import load_det_config, add_mic_config_argument, upstream_mic_config
 
@@ -49,6 +62,27 @@ def gcc_phat(x1, x2, fs, interp_factor=16, max_lag_s=0.001):
     mask = np.abs(lags) <= max_lag_s
     idx = np.argmax(cc[mask])
     return float(lags[mask][idx])
+
+
+def bandpass(x, fs, band, order=4):
+    lo, hi = band
+    hi = min(hi, 0.45 * fs)
+    return sosfiltfilt(butter(order, [lo, hi], btype="band", fs=fs, output="sos"), x)
+
+
+def xcorr_tdoa(x1, x2, fs, interp_factor=16, max_lag_s=0.001):
+    """TDOA (s) of x2 relative to x1 (positive: x2 later) from the positive peak of the plain
+    cross-correlation of two equal-length, already band-passed windows. Both windows are
+    Tukey-tapered and sinc-upsampled by interp_factor before correlating."""
+    n = min(len(x1), len(x2))
+    w = tukey(n, 0.2)
+    a = resample((x1[:n] - np.mean(x1[:n])) * w, n * interp_factor)
+    b = resample((x2[:n] - np.mean(x2[:n])) * w, n * interp_factor)
+    nf = 1 << int(np.ceil(np.log2(2 * len(a))))
+    cc = np.fft.irfft(np.fft.rfft(b, nf) * np.conj(np.fft.rfft(a, nf)), nf)
+    m = int(round(max_lag_s * fs * interp_factor))
+    cc = np.concatenate([cc[-m:], cc[:m + 1]])          # lags -m .. +m
+    return float((int(np.argmax(cc)) - m) / (fs * interp_factor))
 
 
 def peak_timing_tdoa(signal_ref, signal_ch, t_axis, t_onset_ref, t_onset_ch,
@@ -93,12 +127,14 @@ def pick_reference_channel(per_channel):
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Detection Stage 2: GCC-PHAT TDOA for all C(N,2) mic pairs (SW and MB).")
+        description="Detection Stage 2: TDOA for all C(N,2) mic pairs (SW and MB).")
     parser.add_argument("prepared_json", help="Path to Stage 1's *_prepared.json")
     parser.add_argument("config", nargs="?", default="det_config.ini",
                          help="Path to detection .ini config (default: det_config.ini)")
     parser.add_argument("-o", "--output", default=None,
                          help="Output basename (overrides output.basename in config)")
+    parser.add_argument("--method", choices=["xcorr", "gcc_phat"], default=None,
+                        help="TDOA method (default: [tdoa] method in the .ini, else xcorr)")
     add_mic_config_argument(parser)
     args = parser.parse_args()
 
@@ -139,8 +175,16 @@ def main():
         print(f"[Det Stage 2] max_lag_s raised to {max_lag * 1e3:.2f} ms to cover the array aperture")
     pairs = list(combinations(range(n_channels), 2))
     use_peak_timing = prep.get("deconvolution_applied", False)
-    method_label = "peak-timing (deconvolved signal)" if use_peak_timing else "GCC-PHAT"
+    method = (args.method or tw.get("method", "xcorr")).replace("-", "_")
+    if method not in ("xcorr", "gcc_phat"):
+        raise SystemExit(f"[Det Stage 2] unknown [tdoa] method '{method}' (xcorr or gcc_phat)")
+    method_label = ("peak-timing (deconvolved signal)" if use_peak_timing else
+                    "cross-correlation of the band-passed event" if method == "xcorr" else "GCC-PHAT")
     print(f"[Det Stage 2] TDOA method: {method_label}")
+    if method == "xcorr" and not use_peak_timing:
+        sig_sw = [bandpass(s, fs, tw["xcorr_sw_band_hz"]) for s in signals] if sw_used else None
+        mb_ok = ref.get("mb_detected") and ref.get("mb_reliable")
+        sig_mb = [bandpass(s, fs, tw["xcorr_mb_band_hz"]) for s in signals] if mb_ok else None
 
     tdoa_sw = {}
     for (a, b) in (pairs if sw_used else []):
@@ -152,6 +196,10 @@ def main():
             tau = peak_timing_tdoa(signals[a], signals[b], t_axis,
                                     t_sw_a, t_sw_b, fs,
                                     search_start_s=-0.0001, search_end_s=0.0005)
+        elif method == "xcorr":
+            wa = extract_window(sig_sw[a], t_axis, ref["t_sw"], tw["xcorr_sw_window_pre_s"], tw["xcorr_sw_window_post_s"])
+            wb = extract_window(sig_sw[b], t_axis, ref["t_sw"], tw["xcorr_sw_window_pre_s"], tw["xcorr_sw_window_post_s"])
+            tau = xcorr_tdoa(wa, wb, fs, interp_factor=tw["interp_factor"], max_lag_s=max_lag)
         else:
             sw_wins_a = extract_window(signals[a], t_axis, ref["t_sw"],
                                         tw["sw_window_pre_s"], tw["sw_window_post_s"])
@@ -175,6 +223,10 @@ def main():
                 tau = peak_timing_tdoa(signals[a], signals[b], t_axis,
                                         t_mb_a, t_mb_b, fs,
                                         search_start_s=0.0005, search_end_s=0.003)
+            elif method == "xcorr":
+                wa = extract_window(sig_mb[a], t_axis, ref["t_mb"], tw["xcorr_mb_window_pre_s"], tw["xcorr_mb_window_post_s"])
+                wb = extract_window(sig_mb[b], t_axis, ref["t_mb"], tw["xcorr_mb_window_pre_s"], tw["xcorr_mb_window_post_s"])
+                tau = xcorr_tdoa(wa, wb, fs, interp_factor=tw["interp_factor"], max_lag_s=max_lag)
             else:
                 mb_wins_a = extract_window(signals[a], t_axis, ref["t_mb"],
                                             tw["mb_window_pre_s"], tw["mb_window_post_s"])
@@ -214,6 +266,7 @@ def main():
         stage="tdoa",
         source_prepared_json=args.prepared_json,
         reference_channel=ref_ch,
+        tdoa_method=("peak_timing" if use_peak_timing else method),
         sample_rate_hz=fs,
         n_channels=n_channels,
         sw_available=bool(tdoa_sw),

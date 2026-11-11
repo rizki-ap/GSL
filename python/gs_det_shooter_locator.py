@@ -3,24 +3,50 @@
 gs_det_shooter_locator.py
 ============================
 DETECTION STAGE 3. Reads Stage 2's TDOA output and computes the shooter's
-bearing (from muzzle-blast TDOA) and, if muzzle blast TDOA is available,
-range (via the PILAR-V formula) and full 3D position.
+bearing (from the muzzle-blast TDOA) and, when a muzzle blast is available,
+the range, the bullet trajectory and the full 3D shooter position.
 
-Self-contained: range needs a Mach-number estimate, which gs_det_
-classify_bullet.py also produces (more thoroughly, via 3 independent
-methods) -- but this script doesn't depend on that output, so it can run
-right after gs_det_tdoa.py. It gets its own quick Mach estimate via the
-angle-only relation (k_hat_sw . n_hat_shooter ~ 1/M), which needs nothing
-but the TDOA vectors already computed in Stage 2 -- no waveform amplitude
-measurements, no bullet reference library required. Run gs_det_classify_
-bullet.py afterward for a more accurate, amplitude-informed Mach/caliber
-estimate if you want a refined range.
+Range models ([range] model in det_config.ini, or --range-model):
+
+  drag (default)
+    Drag-aware fit, v(s) = v0 exp(-s / lambda), with v0 and lambda taken from
+    the detector's OWN ballistic table ([bullet_reference_library] in det_config.ini;
+    never from the generator). Measurements used:
+      n_hat  direction to the shooter          (muzzle-blast TDOA)
+      k_hat  shockwave propagation direction   (shockwave TDOA)
+      Dt     SW -> MB delay on the reference channel
+      T_N    N-wave duration (optional; ignored if physically implausible)
+    The shooter, the trajectory and the array lie in one plane. For a trial
+    shooter distance D and trajectory angle alpha (miss distance b = D sin alpha)
+    the forward model finds the shock emission point from the LOCAL Mach-angle
+    condition cos(phi) = c / v(s) (Fermat: first-arriving shock) and predicts
+    theta (the angle between n_hat and -k_hat), Dt and T_N (Whitham). (D, alpha)
+    are fitted per caliber by minimising
+      J = (dtheta/sigma_theta)^2 + (dDt/sigma_dt)^2 + (ln T_N ratio/sigma_T)^2 + (b/sigma_b)^2
+    (grid search, then Nelder-Mead). The caliber with the lowest J is reported
+    with its range, miss distance, trajectory and bullet speed at emission.
+    J <~ 1: consistent; J > 4: warning (wrong table, caliber or measurement).
+    Without a usable T_N, the angle and Dt fit every fast-enough caliber
+    equally well, so [range] default_caliber is used and the choice is flagged
+    as ambiguous; the range itself depends only weakly on the caliber.
+    validated against gs_gen_physic.shock_geometry_drag: test_det_range_drag.py.
+
+  constant
+    The original constant-speed PILAR-V solve (Mach from the angle-only
+    relation, miss distance from SW amplitude). Kept for comparison: it
+    overestimates range for real (slowing) bullets -- see drag_model.md.
+
+Speed of sound: [physics] temperature_c (or --temperature-c) sets
+c = 331.3 + 0.606 T; otherwise [physics] speed_of_sound is used.
 
 Usage
 -----
-  python gs_det_shooter_locator.py det_result_tdoa.json                # det_config.ini
+  python gs_det_shooter_locator.py det_result_tdoa.json                       # det_config.ini
   python gs_det_shooter_locator.py det_result_tdoa.json my_det_config.ini
-  python gs_det_shooter_locator.py det_result_tdoa.json -mic_config=UMA8   # normally not needed
+  python gs_det_shooter_locator.py det_result_tdoa.json --temperature-c 26
+  python gs_det_shooter_locator.py det_result_tdoa.json --caliber 7.62_NATO
+  python gs_det_shooter_locator.py det_result_tdoa.json --range-model constant   # old solve
+  python gs_det_shooter_locator.py det_result_tdoa.json -mic_config=UMA8      # normally not needed
 
 -mic_config defaults to the preset recorded in *_tdoa.json (i.e. the one Stage 1 used).
 
@@ -31,15 +57,80 @@ determined; elevation is a magnitude-only estimate and is poorly conditioned nea
 """
 
 import argparse
+import configparser
 import json
+import math
 from datetime import datetime, timezone
 
 import numpy as np
-from scipy.optimize import brentq
+from scipy.optimize import brentq, minimize
 
 from gs_det_signal_prepare import (load_det_config, build_mic_positions,
                                    add_mic_config_argument, upstream_mic_config)
 
+# Whitham N-wave duration coefficient (public constant, Whitham 1952):
+#   T_N = K_T * M * d * (b / L)^(1/4) / (c * (M^2 - 1)^(3/8))
+WHITHAM_K_T = 1.82
+# Whitham peak-overpressure coefficient (legacy constant-speed solve only):
+#   dP = K_P * p_atm * (M^2 - 1)^(1/8) * d / (L^(1/4) * b^(3/4))
+WHITHAM_K_P = 0.53
+
+# Detector-side defaults, used when det_config.ini has no [range] section. The ballistic
+# table is the detector's [bullet_reference_library] (see det_config.ini), maintained
+# independently of the generator's BULLET_LIBRARY (fairness rule).
+RANGE_DEFAULTS = {"model": "drag", "default_caliber": "5.56_NATO", "mach_min": "1.0",
+                  "min_range_m": "5.0", "max_range_m": "3000.0", "n_grid": "240",
+                  "direction_sigma_deg": "1.5", "dt_sigma_ms": "0.2", "t_n_sigma_log": "0.3",
+                  "miss_sigma_m": "50"}
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
+def load_range_config(path, bullet_library):
+    """[range] and [physics] temperature_c from the detection .ini (read here so that
+    gs_det_signal_prepare.load_det_config stays unchanged). The ballistic table is built
+    from the detector's [bullet_reference_library] (bullet_library, as returned by
+    load_det_config): every calibre with a muzzle velocity v0; lam missing or 0 = constant
+    speed."""
+    cp = configparser.ConfigParser()
+    cp.read_dict({"range": RANGE_DEFAULTS, "physics": {"temperature_c": ""}})
+    if path is not None:
+        cp.read(path)
+    if cp.has_section("ballistics"):
+        print("[Det Stage 3] NOTE: [ballistics] is no longer read -- the drag fit uses "
+              "[bullet_reference_library] (<cal>_v0, <cal>_lam, <cal>_d, <cal>_L)")
+
+    table = {}
+    for cal, bl in bullet_library.items():
+        if not bl.get("v0"):
+            print(f"[Det Stage 3] NOTE: {cal} has no v0 in [bullet_reference_library] -- left out of the drag fit")
+            continue
+        lam = bl.get("lam")
+        table[cal] = dict(v0=float(bl["v0"]), lam=np.inf if not lam else float(lam),
+                          d=float(bl["d"]), L=float(bl["L"]))
+    t_raw = cp.get("physics", "temperature_c").strip()
+    return dict(model=cp.get("range", "model").strip().lower(),
+                default_caliber=cp.get("range", "default_caliber").strip(),
+                mach_min=cp.getfloat("range", "mach_min"),
+                min_range_m=cp.getfloat("range", "min_range_m"),
+                max_range_m=cp.getfloat("range", "max_range_m"),
+                n_grid=cp.getint("range", "n_grid"),
+                direction_sigma_deg=cp.getfloat("range", "direction_sigma_deg"),
+                dt_sigma_ms=cp.getfloat("range", "dt_sigma_ms"),
+                t_n_sigma_log=cp.getfloat("range", "t_n_sigma_log"),
+                miss_sigma_m=cp.getfloat("range", "miss_sigma_m"),
+                temperature_c=float(t_raw) if t_raw else None,
+                ballistics=table)
+
+
+def speed_of_sound_from_temperature(t_c):
+    """Speed of sound in dry air (m/s), linear approximation."""
+    return 331.3 + 0.606 * t_c
+
+
+# ---------------------------------------------------------------------------
+# Directions
+# ---------------------------------------------------------------------------
 
 def solve_doa(mic_pos, tdoa_dict, c, ref_ch=0, planar_source_side="above"):
     """Solve the plane-wave linear system delta_p . k_hat = c*tau for the
@@ -85,7 +176,13 @@ def solve_doa(mic_pos, tdoa_dict, c, ref_ch=0, planar_source_side="above"):
     return k_hat / np.linalg.norm(k_hat), 1.0
 
 
+# ---------------------------------------------------------------------------
+# Range: constant speed (legacy; also imported by gs_det_classify_bullet.py)
+# ---------------------------------------------------------------------------
+
 def pilar_v_exact(dt_val, b, M, c, r_max=5000.0):
+    """Constant-speed SW->MB delay solved for r = along-track distance from the
+    shooter to the closest point of approach (miss distance b, Mach M)."""
     beta = np.sqrt(M ** 2 - 1.0)
 
     def f(r):
@@ -94,19 +191,287 @@ def pilar_v_exact(dt_val, b, M, c, r_max=5000.0):
     return brentq(f, 0.1, r_max)
 
 
+# ---------------------------------------------------------------------------
+# Range: drag-aware
+# ---------------------------------------------------------------------------
+
+def bullet_speed(s, v0, lam):
+    """Speed (m/s) after s metres, v0 exp(-s / lam); constant if lam is inf."""
+    return v0 if not np.isfinite(lam) else v0 * np.exp(-s / lam)
+
+
+def bullet_time(s, v0, lam):
+    """Time of flight (s) to s metres, lam (exp(s / lam) - 1) / v0; s / v0 if lam is inf."""
+    return s / v0 if not np.isfinite(lam) else lam * np.expm1(s / lam) / v0
+
+
+def forward_model(D, alpha, c, v0, lam, mach_min=1.0, n_iter=60):
+    """Forward model in the plane of the shooter, the trajectory and the array.
+
+    Shooter at distance D from the array; the trajectory leaves the shooter at
+    angle alpha from the line of sight, so it passes the array at miss distance
+    b = D sin(alpha). The first shock reaching the array is emitted at the path
+    length s* that minimises t(s) + |x - p(s)|/c (Fermat), i.e. where
+    1/v(s) = cos(angle between path and the ray to the array)/c  -- the LOCAL
+    Mach-angle condition, solved by bisection (unique root on [0, a]).
+
+    Works element-wise on numpy arrays. Returns a dict of arrays:
+      theta  angle at the array between the shooter and the apparent SW source
+      dt     muzzle-blast minus shockwave arrival time
+      s, v, rho (emission path length, bullet speed there, emission-to-array distance),
+      miss, valid (shock reaches the array and is emitted while supersonic)."""
+    D, alpha = np.broadcast_arrays(np.asarray(D, float), np.asarray(alpha, float))
+    a = D * np.cos(alpha)
+    b = D * np.sin(alpha)
+    inside = (v0 * np.cos(alpha) > c) & (a > 0)
+    lo, hi = np.zeros_like(a), np.maximum(a, 0.0)
+    for _ in range(n_iter):
+        mid = 0.5 * (lo + hi)
+        fp = 1.0 / bullet_speed(mid, v0, lam) - (a - mid) / (c * np.hypot(a - mid, b) + 1e-300)
+        neg = fp < 0
+        lo = np.where(neg, mid, lo)
+        hi = np.where(neg, hi, mid)
+    s = 0.5 * (lo + hi)
+    v = bullet_speed(s, v0, lam) * np.ones_like(s)
+    xe, ye = D - s * np.cos(alpha), s * np.sin(alpha)          # emission point (shooter on +x)
+    rho = np.hypot(xe, ye)
+    theta = np.arctan2(ye, xe)
+    dt = D / c - bullet_time(s, v0, lam) - rho / c
+    return dict(theta=theta, dt=dt, s=s, v=v, rho=rho, miss=b,
+                valid=inside & (v > mach_min * c))
+
+
+def _forward_scalar(D, alpha, c, v0, lam, mach_min=1.0, n_iter=50):
+    """Scalar (pure-Python, fast) version of forward_model; None if not valid."""
+    a, b = D * math.cos(alpha), D * math.sin(alpha)
+    if a <= 0 or v0 * math.cos(alpha) <= c:
+        return None
+    inv_lam = 0.0 if not np.isfinite(lam) else 1.0 / lam
+    lo, hi = 0.0, a
+    for _ in range(n_iter):
+        mid = 0.5 * (lo + hi)
+        if math.exp(mid * inv_lam) / v0 - (a - mid) / (c * math.hypot(a - mid, b) + 1e-300) < 0:
+            lo = mid
+        else:
+            hi = mid
+    s = 0.5 * (lo + hi)
+    v = v0 * math.exp(-s * inv_lam)
+    if v <= mach_min * c:
+        return None
+    xe, ye = D - s * math.cos(alpha), s * math.sin(alpha)
+    rho = math.hypot(xe, ye)
+    t = s / v0 if inv_lam == 0.0 else lam * math.expm1(s * inv_lam) / v0
+    return dict(theta=math.atan2(ye, xe), dt=D / c - t - rho / c, s=s, v=v, rho=rho, miss=b)
+
+
+def fit_range_drag(dt_meas, theta_meas, c, bl, rcfg, t_n_meas=None, max_starts=4):
+    """Fit (D, alpha) for one caliber (bl: v0, lam, d, L) so the forward model
+    reproduces the measurements. Cost (sum of squared normalised residuals):
+      SW angle   (theta_pred - theta) / direction_sigma_deg
+      delay      (Dt_pred - Dt) / dt_sigma_ms
+      N-wave     ln(T_N_pred / T_N) / t_n_sigma_log      (only if T_N is usable)
+      miss prior miss distance / miss_sigma_m             (0 disables)
+    The angle and the delay alone fix (D, alpha) exactly for any caliber whose
+    table is fast enough; the N-wave term mainly pins the miss distance and is
+    what separates calibers. J <~ 1 means the caliber explains everything; a
+    few or more means it does not. A coarse grid finds the basins, Nelder-Mead
+    refines the best few. Returns the local minima found, best first."""
+    v0, lam = bl["v0"], bl["lam"]
+    sig_th = math.radians(rcfg["direction_sigma_deg"])
+    sig_dt = rcfg["dt_sigma_ms"] * 1e-3
+    sig_t = rcfg["t_n_sigma_log"]
+    sig_b = rcfg["miss_sigma_m"]
+    use_t = (t_n_meas is not None and np.isfinite(t_n_meas) and t_n_meas > 0 and sig_t > 0)
+    mm = rcfg["mach_min"]
+
+    def t_term(M, b):
+        with np.errstate(divide="ignore", invalid="ignore"):
+            T = WHITHAM_K_T * M * bl["d"] * (np.maximum(b, 1e-6) / bl["L"]) ** 0.25 / (
+                c * np.sqrt(np.maximum(M ** 2 - 1.0, 1e-12)) ** 0.75)
+            return (np.log(T / t_n_meas) / sig_t) ** 2, T
+
+    Ds = np.geomspace(rcfg["min_range_m"], rcfg["max_range_m"], rcfg["n_grid"])
+    als = np.radians(np.geomspace(0.02, 80.0, 160))
+    f = forward_model(Ds[:, None], als[None, :], c, v0, lam, mm)
+    J = ((f["theta"] - theta_meas) / sig_th) ** 2 + ((f["dt"] - dt_meas) / sig_dt) ** 2
+    if use_t:
+        J = J + t_term(f["v"] / c, f["miss"])[0]
+    if sig_b > 0:
+        J = J + (f["miss"] / sig_b) ** 2
+    J = np.where(f["valid"], J, np.inf)
+    prof = J.min(axis=1)
+    best_a = J.argmin(axis=1)
+    if not np.isfinite(prof).any():
+        return []
+
+    # local minima of the range profile, best few -> refine in (ln D, ln alpha)
+    mins = [i for i in range(len(Ds)) if np.isfinite(prof[i])
+            and (i == 0 or prof[i] <= prof[i - 1]) and (i == len(Ds) - 1 or prof[i] <= prof[i + 1])]
+    mins = sorted(mins, key=lambda i: prof[i])[:max_starts]
+
+    def terms(x):
+        r = _forward_scalar(math.exp(x[0]), math.exp(x[1]), c, v0, lam, mm)
+        if r is None:
+            return None, None
+        j = [((r["theta"] - theta_meas) / sig_th) ** 2, ((r["dt"] - dt_meas) / sig_dt) ** 2, 0.0,
+             (r["miss"] / sig_b) ** 2 if sig_b > 0 else 0.0]
+        if use_t:
+            j[2] = float(t_term(r["v"] / c, r["miss"])[0])
+        return j, r
+
+    def cost(x):
+        j, _ = terms(x)
+        return 1e12 if j is None else sum(j)
+
+    sols = []
+    for i in mins:
+        res = minimize(cost, [math.log(Ds[i]), math.log(als[best_a[i]])], method="Nelder-Mead",
+                       options=dict(xatol=1e-7, fatol=1e-10, maxiter=800))
+        j, r = terms(res.x)
+        D, al = math.exp(res.x[0]), math.exp(res.x[1])
+        if j is None or any(abs(D - s["D"]) < 1e-3 * D for s in sols):
+            continue
+        sols.append(dict(D=D, alpha=al, J=float(sum(j)), J_terms=[float(x) for x in j],
+                         miss=r["miss"], s_emit=r["s"], rho=r["rho"], v_emit=r["v"], mach_emit=r["v"] / c,
+                         theta_residual_deg=math.degrees(r["theta"] - theta_meas),
+                         dt_residual_ms=(r["dt"] - dt_meas) * 1e3))
+    # Best first. Among solutions that all fit (J < 1), prefer the smaller miss
+    # distance (shots aimed at or near the array are the common case).
+    sols.sort(key=lambda s: (s["J"] >= 1.0, s["miss"] if s["J"] < 1.0 else s["J"]))
+    return sols
+
+
+def whitham_duration(M, b, d, L, c):
+    """Predicted N-wave duration (s)."""
+    if M <= 1.0 or b <= 0:
+        return np.nan
+    return WHITHAM_K_T * M * d * (b / L) ** 0.25 / (c * (M ** 2 - 1.0) ** 0.375)
+
+
+def t_n_plausible_range(ballistics, c, miss_range=(0.5, 100.0), mach_range=(1.05, 3.0), margin=1.4):
+    """Widest band of N-wave durations any caliber in the table can produce for
+    miss distances and local Mach numbers in the given ranges, widened by margin.
+    A measured T_N outside it is a Stage 1 measurement failure, not physics."""
+    Ms = np.linspace(mach_range[0], mach_range[1], 50)
+    Ts = [whitham_duration(M, b, bl["d"], bl["L"], c)
+          for bl in ballistics.values() for b in miss_range for M in Ms]
+    return min(Ts) / margin, max(Ts) * margin
+
+
+def trajectory_vectors(sol, n_hat, k_hat):
+    """3D shooter position, emission point, bullet direction and closest point of
+    approach, in the plane spanned by the shooter direction and the SW direction."""
+    src = -k_hat                                            # apparent SW source direction
+    e = src - np.dot(src, n_hat) * n_hat
+    if np.linalg.norm(e) < 1e-9:
+        return {}
+    e /= np.linalg.norm(e)
+    P = sol["D"] * n_hat
+    u = -np.cos(sol["alpha"]) * n_hat + np.sin(sol["alpha"]) * e
+    return dict(shooter_position_m=P.tolist(),
+                emission_point_m=(P + sol["s_emit"] * u).tolist(),
+                bullet_direction=u.tolist(),
+                closest_point_of_approach_m=(P + sol["D"] * np.cos(sol["alpha"]) * u).tolist())
+
+
+def locate_drag(rcfg, dt_meas, theta, c, n_hat, k_hat, t_n_meas, forced_caliber=None):
+    """Fit every caliber in the ballistic table, pick one, return a result dict."""
+    t_ok = (t_n_meas is not None and np.isfinite(t_n_meas) and t_n_meas > 0
+            and rcfg["t_n_sigma_log"] > 0)
+    t_note = None
+    if t_ok:
+        lo, hi = t_n_plausible_range(rcfg["ballistics"], c)
+        if not (lo <= t_n_meas <= hi):
+            t_ok = False
+            t_note = (f"measured T_N {t_n_meas * 1e6:.0f} us is outside the physically possible "
+                      f"{lo * 1e6:.0f}-{hi * 1e6:.0f} us for this table -- ignored (check Stage 1)")
+            print(f"[Det Stage 3] WARNING: {t_note}")
+    candidates = {}
+    for cal, bl in rcfg["ballistics"].items():
+        sols = fit_range_drag(dt_meas, theta, c, bl, rcfg, t_n_meas if t_ok else None)
+        if not sols:
+            candidates[cal] = dict(valid=False)
+            print(f"    {cal}: no supersonic geometry fits")
+            continue
+        s0 = sols[0]
+        t_pred = whitham_duration(s0["mach_emit"], s0["miss"], bl["d"], bl["L"], c)
+        candidates[cal] = dict(valid=True, range_m=s0["D"], miss_distance_m=s0["miss"],
+                               mach_at_emission=s0["mach_emit"], speed_at_emission_mps=s0["v_emit"],
+                               fit_cost=s0["J"],
+                               fit_cost_terms=dict(sw_angle=s0["J_terms"][0], dt=s0["J_terms"][1],
+                                                   n_wave_duration=s0["J_terms"][2],
+                                                   miss_prior=s0["J_terms"][3]),
+                               sw_angle_residual_deg=s0["theta_residual_deg"],
+                               dt_residual_ms=s0["dt_residual_ms"],
+                               t_n_predicted_s=t_pred, t_n_measured_s=t_n_meas if t_ok else None,
+                               muzzle_velocity_assumed_mps=bl["v0"], decay_length_assumed_m=bl["lam"],
+                               alternative_solutions=[dict(range_m=s["D"], miss_distance_m=s["miss"],
+                                                           fit_cost=s["J"]) for s in sols[1:4]],
+                               _sol=s0)
+        print(f"    {cal:10s} range {s0['D']:7.1f} m  miss {s0['miss']:5.1f} m  Mach {s0['mach_emit']:.2f}  "
+              f"cost {s0['J']:8.2f}  (angle {s0['theta_residual_deg']:+.2f} deg, Dt {s0['dt_residual_ms']:+.2f} ms, "
+              f"T_N {t_pred * 1e6:.0f}" + (f"/{t_n_meas * 1e6:.0f} us)" if t_ok else " us pred)")
+              + (f"  +{len(sols) - 1} alt." if len(sols) > 1 else ""))
+
+    valid = {k: v for k, v in candidates.items() if v["valid"]}
+    if not valid:
+        return dict(range_model="drag", range_estimate_m=None, caliber_candidates=candidates)
+
+    fitting = [k for k in valid if valid[k]["fit_cost"] < 1.0]
+    if forced_caliber:
+        if forced_caliber not in valid:
+            raise SystemExit(f"[Det Stage 3] --caliber {forced_caliber}: no valid solution "
+                             f"(valid: {', '.join(valid)})")
+        chosen, how = forced_caliber, "forced with --caliber"
+    elif not t_ok and rcfg["default_caliber"] in fitting:
+        chosen, how = rcfg["default_caliber"], "default_caliber (fits; no N-wave duration used)"
+    else:
+        chosen = min(valid, key=lambda k: valid[k]["fit_cost"])
+        how = ("lowest cost: SW angle + delay + N-wave duration" if t_ok
+               else "lowest cost: SW angle + delay (no N-wave duration used)")
+        if not t_ok and len(fitting) > 1:
+            how += f"; ambiguous, also fits: {', '.join(k for k in fitting if k != chosen)}"
+
+    sol = valid[chosen]["_sol"]
+    for v in candidates.values():
+        v.pop("_sol", None)
+    if sol["J"] > 4.0:
+        print(f"[Det Stage 3] WARNING: best fit cost {sol['J']:.1f} > 4 -- the measurements are not "
+              f"consistent with this caliber's ballistics; treat the range as rough.")
+    if t_note:
+        how += "; " + t_note
+    out = dict(range_model="drag", caliber=chosen, caliber_selection=how,
+               range_estimate_m=sol["D"], miss_distance_m=sol["miss"],
+               mach_at_emission=sol["mach_emit"], speed_at_emission_mps=sol["v_emit"],
+               along_track_to_cpa_m=sol["D"] * np.cos(sol["alpha"]),
+               fit_cost=sol["J"], fit_consistent=bool(sol["J"] <= 4.0),
+               caliber_candidates=candidates)
+    out.update(trajectory_vectors(sol, n_hat, k_hat))
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Main
+# ---------------------------------------------------------------------------
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Detection Stage 3: DOA + PILAR-V range -> 3D shooter location.")
+        description="Detection Stage 3: DOA + drag-aware range -> 3D shooter location.")
     parser.add_argument("tdoa_json", help="Path to Stage 2's *_tdoa.json")
     parser.add_argument("config", nargs="?", default="det_config.ini",
-                         help="Path to detection .ini config (default: det_config.ini)")
+                        help="Path to detection .ini config (default: det_config.ini)")
     parser.add_argument("-o", "--output", default=None,
-                         help="Output basename (overrides output.basename in config)")
+                        help="Output basename (overrides output.basename in config)")
+    parser.add_argument("--range-model", choices=["drag", "constant"], default=None,
+                        help="Range model (default: [range] model in the .ini, else drag)")
+    parser.add_argument("--temperature-c", type=float, default=None,
+                        help="Air temperature (deg C) for c = 331.3 + 0.606 T "
+                             "(overrides [physics] temperature_c / speed_of_sound)")
+    parser.add_argument("--caliber", default=None,
+                        help="Drag model: use this [bullet_reference_library] caliber instead of choosing by T_N")
     parser.add_argument("--assumed-miss-distance", type=float, default=None,
-                         help="Fallback miss distance b (m) for the range solve, ONLY used if "
-                              "gs_det_classify_bullet.py hasn't already provided a measured one. "
-                              "This is a genuine detector-design assumption (a typical/expected "
-                              "engagement envelope), not generation ground truth.")
+                        help="Constant model only: miss distance b (m) instead of the "
+                             "amplitude-derived estimate.")
     add_mic_config_argument(parser)
     args = parser.parse_args()
 
@@ -114,8 +479,12 @@ def main():
         tdoa_data = json.load(f)
 
     cfg = load_det_config(args.config, args.mic_config or upstream_mic_config(tdoa_data))
+    rcfg = load_range_config(args.config, cfg["bullet_reference_library"])
     if args.output:
         cfg["output"]["basename"] = args.output
+    model = args.range_model or rcfg["model"]
+    if model not in ("drag", "constant"):
+        raise SystemExit(f"[Det Stage 3] unknown range model '{model}' (drag or constant)")
 
     geom = cfg["geometry"]
     mic_pos = build_mic_positions(cfg)
@@ -124,7 +493,15 @@ def main():
         raise SystemExit(f"[Det Stage 3] ERROR: TDOA file has {tdoa_data['n_channels']} channels but "
                          f"mic_config {geom['mic_config']} has {len(mic_pos)} mics.")
     print(f"[Det Stage 3] mic_config = {geom['mic_config']} ({len(mic_pos)} mics)")
-    c = cfg["physics"]["speed_of_sound"]
+
+    t_c = args.temperature_c if args.temperature_c is not None else rcfg["temperature_c"]
+    if t_c is not None:
+        c = speed_of_sound_from_temperature(t_c)
+        c_source = f"temperature {t_c:.1f} C"
+    else:
+        c = cfg["physics"]["speed_of_sound"]
+        c_source = "[physics] speed_of_sound"
+    print(f"[Det Stage 3] c = {c:.1f} m/s ({c_source})")
     ref_ch = tdoa_data["reference_channel"]
 
     result = dict(
@@ -132,6 +509,8 @@ def main():
         stage="shooter_location",
         source_tdoa_json=args.tdoa_json,
         mic_config=geom["mic_config"],
+        speed_of_sound_mps=c,
+        speed_of_sound_source=c_source,
     )
 
     sw_available = tdoa_data.get("sw_available", bool(tdoa_data.get("tdoa_sw_s")))
@@ -148,7 +527,7 @@ def main():
 
     if not tdoa_data["mb_available"]:
         print("[Det Stage 3] No reliable muzzle-blast TDOA available -- bearing/range/position "
-              "cannot be computed, only the bullet trajectory direction (k_hat_sw) above.")
+              "cannot be computed, only the shockwave direction (k_hat_sw) above.")
         result["bearing_available"] = False
         if k_hat_sw is not None:
             # A close impulsive TEST sound (clap, balloon) also looks like a shockwave. For such a
@@ -171,62 +550,74 @@ def main():
         print(f"[Det Stage 3] Shooter bearing: azimuth={az:.2f} deg, elevation={el:.2f} deg "
               f"(|k| = {k_norm_mb:.4f}, should be ~1.0)")
 
-        # Self-contained rough Mach + range estimate (Method A: angle-only for
-        # Mach, needs nothing but the TDOA-derived direction vectors above;
-        # range then needs Dt and a miss-distance b, using this detector's own
-        # reference bullet library with a DEFAULT assumed caliber -- NOT a
-        # measurement of the true caliber, just a working assumption so this
-        # stage can run standalone. gs_det_classify_bullet.py refines both the
-        # Mach estimate (3 independent methods) and the caliber identification;
-        # re-run this stage with --assumed-miss-distance from its output for a
-        # better range if you want that refinement.)
-        v_hat_approx = -n_hat_shooter
-        dot_A = float(np.dot(k_hat_sw, v_hat_approx)) if k_hat_sw is not None else 0.0
-        M_A = 1.0 / dot_A if dot_A > 0 else None
+        # theta: angle between the shooter direction and the apparent shockwave
+        # source direction. 1/cos(theta) is the angle-only Mach (Method A), which
+        # is biased low by the miss angle; the drag solve corrects for that.
+        dt_sw_to_mb = tdoa_data.get("dt_sw_to_mb_s")
+        result["dt_sw_to_mb_s"] = dt_sw_to_mb
+        theta, M_A = None, None
+        if k_hat_sw is not None:
+            cos_theta = float(np.clip(np.dot(k_hat_sw, -n_hat_shooter), -1.0, 1.0))
+            theta = float(np.arccos(cos_theta))
+            M_A = 1.0 / cos_theta if cos_theta > 0 else None
+            result["sw_angle_from_shooter_deg"] = float(np.degrees(theta))
         result["mach_estimate_angle_only"] = M_A
 
-        dt_sw_to_mb = tdoa_data.get("dt_sw_to_mb_s")
-        dp_sw_norm = tdoa_data.get("dp_sw_ref_channel")
-        # dp_sw_norm is in NORMALIZED units (Stage 1 normalizes the wav);
-        # the bullet library's dP0_sw is in Pa -- convert using this
-        # detector's own assumed hardware calibration before mixing them.
-        dp_sw = (abs(dp_sw_norm) * cfg["calibration"]["assumed_peak_pa_at_full_scale"]
-                 if dp_sw_norm is not None else None)
-        default_caliber = next(iter(cfg["bullet_reference_library"]))
-        bl = cfg["bullet_reference_library"][default_caliber]
-
-        if M_A is not None and M_A > 1.01 and dt_sw_to_mb is not None:
-            if args.assumed_miss_distance is not None:
-                b_est = args.assumed_miss_distance
-                b_source = "user-provided --assumed-miss-distance"
-            elif dp_sw is not None and dp_sw > 0:
-                b_est = bl["b0_sw"] * (bl["dP0_sw"] / dp_sw) ** 2
-                b_source = f"amplitude-derived, assuming default caliber {default_caliber}"
+        if k_hat_sw is None or dt_sw_to_mb is None or M_A is None or M_A <= 1.01:
+            reason = ("no shockwave (blast only)" if k_hat_sw is None
+                      else "no Dt available" if dt_sw_to_mb is None
+                      else "SW direction not consistent with a supersonic bullet")
+            print(f"[Det Stage 3] Skipping range solve ({reason}).")
+            result["range_estimate_m"] = None
+        elif model == "drag":
+            print(f"[Det Stage 3] Drag-aware range solve: Dt = {dt_sw_to_mb * 1e3:.2f} ms, "
+                  f"SW {np.degrees(theta):.2f} deg off the shooter direction "
+                  f"(angle-only Mach {M_A:.3f})")
+            t_n = tdoa_data.get("t_n_sw_ref_channel")
+            out = locate_drag(rcfg, dt_sw_to_mb, theta, c, n_hat_shooter, k_hat_sw, t_n, args.caliber)
+            result.update(out)
+            if out.get("range_estimate_m") is None:
+                print("[Det Stage 3] No caliber in [bullet_reference_library] fits -- bearing-only result reported.")
             else:
-                b_est = 10.0
-                b_source = "no amplitude measurement available -- arbitrary 10m fallback"
-
+                print(f"[Det Stage 3] Caliber {out['caliber']} ({out['caliber_selection']}): "
+                      f"range = {out['range_estimate_m']:.1f} m, miss distance = "
+                      f"{out['miss_distance_m']:.1f} m, bullet speed at the array = "
+                      f"{out['speed_at_emission_mps']:.0f} m/s (Mach {out['mach_at_emission']:.2f})")
+        else:
+            # Legacy constant-speed solve. Miss distance from the SW amplitude by inverting
+            # Whitham's dP law for the first [bullet_reference_library] caliber at the
+            # angle-only Mach (the library no longer has dP0_sw / b0_sw reference points).
+            dp_sw_norm = tdoa_data.get("dp_sw_ref_channel")
+            norm_peak = tdoa_data.get("normalization_peak")
+            dp_sw = (abs(dp_sw_norm) * (norm_peak if norm_peak else 1.0)
+                     * cfg["calibration"]["assumed_peak_pa_at_full_scale"]
+                     if dp_sw_norm is not None else None)
+            if dp_sw is not None and not norm_peak:
+                print("[Det Stage 3] WARNING: no normalization_peak in the TDOA file -- SW amplitude "
+                      "taken as normalized units x full scale")
+            default_caliber = next(iter(cfg["bullet_reference_library"]))
+            bl = cfg["bullet_reference_library"][default_caliber]
+            p_atm = cfg["physics"].get("atmospheric_pressure_pa", 101325.0)
+            if args.assumed_miss_distance is not None:
+                b_est, b_source = args.assumed_miss_distance, "user-provided --assumed-miss-distance"
+            elif dp_sw is not None and dp_sw > 0:
+                b_est = (WHITHAM_K_P * p_atm * (M_A ** 2 - 1.0) ** 0.125 * bl["d"]
+                         / (bl["L"] ** 0.25 * dp_sw)) ** (4.0 / 3.0)
+                b_source = f"amplitude-derived (Whitham), assuming default caliber {default_caliber}"
+            else:
+                b_est, b_source = 10.0, "no amplitude measurement available -- arbitrary 10m fallback"
             try:
                 r_est = pilar_v_exact(dt_sw_to_mb, b_est, M_A, c)
                 r_3d = float(np.sqrt(r_est ** 2 + b_est ** 2))
-                shooter_pos_est = (r_3d * n_hat_shooter).tolist()
-                result["range_estimate_m"] = r_est
-                result["miss_distance_assumed_m"] = b_est
-                result["miss_distance_source"] = b_source
-                result["shooter_position_estimate_m"] = shooter_pos_est
-                print(f"[Det Stage 3] Mach (angle-only) = {M_A:.3f}, b assumed = {b_est:.2f} m "
-                      f"({b_source})")
-                print(f"[Det Stage 3] PILAR-V range = {r_est:.2f} m, "
-                      f"3D position estimate = {shooter_pos_est}")
+                result.update(range_model="constant", range_estimate_m=r_3d,
+                              along_track_to_cpa_m=r_est, miss_distance_m=b_est,
+                              miss_distance_source=b_source,
+                              shooter_position_m=(r_3d * n_hat_shooter).tolist())
+                print(f"[Det Stage 3] Constant-speed range = {r_3d:.2f} m "
+                      f"(Mach {M_A:.3f} angle-only, b = {b_est:.2f} m, {b_source})")
             except (ValueError, RuntimeError) as e:
                 print(f"[Det Stage 3] Range solve failed ({e}) -- bearing-only result reported.")
                 result["range_estimate_m"] = None
-        else:
-            reason = ("no shockwave (blast only)" if k_hat_sw is None else
-                      "M<=1 (not physical)" if (M_A is None or M_A <= 1.01) else "no Dt available")
-            print(f"[Det Stage 3] Skipping range solve ({reason}). "
-                  "Run gs_det_classify_bullet.py for a more robust Mach/range estimate.")
-            result["range_estimate_m"] = None
 
     out_json = f"{cfg['output']['basename']}_location.json"
     with open(out_json, "w") as f:
