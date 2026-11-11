@@ -4,7 +4,7 @@ gs_det_tdoa.py
 ================
 DETECTION STAGE 2. Reads Stage 1's prepared signal + onset detections and
 computes GCC-PHAT time-difference-of-arrival for all C(N,2) microphone pairs
-(6 for the 4-mic PilarV tetrahedron and the 4-mic UMA8) -- separately for
+(6 for the 4-mic arrays: PILAR-V, Tetrahedral-0,3 and UMA8) -- separately for
 the shockwave and muzzle blast events. Either event may be missing (Stage 1's
 classify method reports SW only / MB only): only the TDOAs of the events that
 were found are computed, e.g. MB only -> bearing without range downstream.
@@ -132,6 +132,11 @@ def main():
           f"events: {prep.get('event_class', 'n/a')})")
 
     tw = cfg["tdoa"]
+    # the lag search must cover the array's largest possible delay (PILAR-V: 0.356 m -> ~1.04 ms,
+    # more than the 1 ms default max_lag_s)
+    max_lag = max(tw["max_lag_s"], 1.1 * cfg["geometry"]["aperture_m"] / cfg["physics"]["speed_of_sound"])
+    if max_lag > tw["max_lag_s"]:
+        print(f"[Det Stage 2] max_lag_s raised to {max_lag * 1e3:.2f} ms to cover the array aperture")
     pairs = list(combinations(range(n_channels), 2))
     use_peak_timing = prep.get("deconvolution_applied", False)
     method_label = "peak-timing (deconvolved signal)" if use_peak_timing else "GCC-PHAT"
@@ -153,7 +158,7 @@ def main():
             sw_wins_b = extract_window(signals[b], t_axis, ref["t_sw"],
                                         tw["sw_window_pre_s"], tw["sw_window_post_s"])
             tau = gcc_phat(sw_wins_a, sw_wins_b, fs,
-                            interp_factor=tw["interp_factor"], max_lag_s=tw["max_lag_s"])
+                            interp_factor=tw["interp_factor"], max_lag_s=max_lag)
         tdoa_sw[f"{a},{b}"] = tau
 
     tdoa_mb = {}
@@ -176,7 +181,7 @@ def main():
                 mb_wins_b = extract_window(signals[b], t_axis, ref["t_mb"],
                                             tw["mb_window_pre_s"], tw["mb_window_post_s"])
                 tau = gcc_phat(mb_wins_a, mb_wins_b, fs,
-                                interp_factor=tw["interp_factor"], max_lag_s=tw["max_lag_s"])
+                                interp_factor=tw["interp_factor"], max_lag_s=max_lag)
             tdoa_mb[f"{a},{b}"] = tau
     else:
         print("[Det Stage 2] WARNING: reference channel's MB detection wasn't reliable -- "
@@ -216,6 +221,8 @@ def main():
         event_class=prep.get("event_class"),
         dt_sw_to_mb_s=dt_sw_to_mb,
         dp_sw_ref_channel=ref.get("dP_sw"),
+        # Stage 1 peak-normalizes the signal; this factor turns dp_* back into full-scale units
+        normalization_peak=prep.get("normalization_peak"),
         t_n_sw_ref_channel=ref.get("T_N"),
         dp_mb_ref_channel=ref.get("dP_mb"),
         tdoa_sw_s=tdoa_sw,

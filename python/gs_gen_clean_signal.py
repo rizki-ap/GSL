@@ -15,7 +15,8 @@ Usage
   python gs_gen_clean_signal.py gen_config.ini -components=muzzle_blast  # muzzle blast only
 
 -mic_config selects the microphone array ([mic_config.<NAME>] section of the .ini; default
-[geometry] mic_config = PilarV, the 4-mic tetrahedron). One channel per mic.
+[geometry] mic_config = Tetrahedral-0,3, the regular 4-mic tetrahedron with 0.30 m edge;
+PILAR-V = the real sensor geometry). One channel per mic.
 
 -components selects the acoustic events to synthesise: both (default, [signal] components in
 the .ini), shockwave, or muzzle_blast (aliases sw, mb, blast). With one event the time axis
@@ -32,6 +33,15 @@ Model summary (see gs_gen_physic.py): Mach-cone shock arrival in closed form, Wh
 Friedlander blast with Hopkinson-Cranz/Kinney-Graham scaling, speed of sound from temperature,
 optional first-order wind, causal ISO 9613-1 absorption per event, no shock below
 shockwave.mach_threshold and at sensors the Mach cone does not reach.
+
+Ground reflection ([ground] enabled = true): flat ground at z = -array_height_m in the array
+frame. Each sensor also receives the shockwave and the blast at its mirror image below the
+ground (image-source method), scaled by reflection_coeff_sw / reflection_coeff_mb. The
+reflected N-wave has its own arrival time, miss distance, amplitude and duration; it reaches
+the higher sensors later. Its ground truth is in per_mic[i].shockwave_reflected and
+per_mic[i].muzzle_blast_reflected. It follows -components (a reflected shockwave only with the
+shockwave). A reflection is omitted where the emission point (shock) or the shooter (blast) is
+not above the ground plane.
 """
 
 import argparse
@@ -54,6 +64,13 @@ def _matrix_us(times):
     t = np.asarray(times, dtype=float)
     m = (t[:, None] - t[None, :]) * 1e6
     return [[_none_if_nan(v) for v in row] for row in m]
+
+
+def _reflection_point(x_emit, img_pos, z_g):
+    """Point where the straight ray from the emission point to the image sensor crosses the ground."""
+    x_emit, img_pos = np.asarray(x_emit, float), np.asarray(img_pos, float)
+    f = (x_emit[2] - z_g) / (x_emit[2] - img_pos[2])
+    return (x_emit + f * (img_pos - x_emit)).tolist()
 
 
 def generate_clean(cfg):
@@ -96,6 +113,44 @@ def generate_clean(cfg):
     t_sw = np.array([g["t_arrive"] if (g is not None and g["in_cone"]) else np.nan for g in geo]) \
         if shock_on else np.full(n_mics, np.nan)
 
+    # ---- ground reflection: the same solutions at the image sensors ---------------------------
+    gnd = cfg.get("ground", {"enabled": False})
+    ground_on = bool(gnd["enabled"])
+    t_swr = np.full(n_mics, np.nan)
+    t_mbr = np.full(n_mics, np.nan)
+    r_mbr = np.full(n_mics, np.nan)
+    geo_r = [None] * n_mics
+    swr_reason = ["ground_disabled"] * n_mics
+    mbr_reason = ["ground_disabled"] * n_mics
+    if ground_on:
+        z_g = -gnd["array_height_m"]
+        if np.min(mic_pos[:, 2]) <= z_g:
+            raise ValueError(f"ground.array_height_m = {gnd['array_height_m']} m puts the ground above a "
+                             f"microphone (lowest mic at z = {np.min(mic_pos[:, 2]):.3f} m)")
+        img = gp.image_positions(mic_pos, z_g)
+        for i in range(n_mics):
+            if shock_on:
+                if drag:
+                    g = gp.shock_geometry_drag(img[i], origin, v_hat, M * c, bullet["lam"], c, wind,
+                                               shk["mach_threshold"])
+                else:
+                    g = gp.shock_geometry(img[i], origin, v_hat, M, c, wind)
+                geo_r[i] = g
+                if not g["in_cone"]:
+                    swr_reason[i] = "subsonic_at_emission" if g.get("subsonic") else "outside_mach_cone"
+                elif g["x_emit"][2] <= z_g:
+                    swr_reason[i] = "emission_below_ground"
+                else:
+                    swr_reason[i] = None
+                    t_swr[i] = g["t_arrive"]
+            else:
+                swr_reason[i] = "below_mach_threshold"
+            if shooter[2] > z_g:
+                t_mbr[i], r_mbr[i], _ = gp.muzzle_arrival(img[i], shooter, c, wind)
+                mbr_reason[i] = None
+            else:
+                mbr_reason[i] = "shooter_below_ground"
+
     # ---- master time axis: spans the events being generated --------------------------------
     if comps == "shockwave" and np.all(np.isnan(t_sw)):
         if not shock_on:
@@ -105,15 +160,18 @@ def generate_clean(cfg):
         else:
             why = "no microphone is inside the Mach cone"
         raise ValueError(f"components = shockwave, but no microphone receives a shockwave: {why}")
+    def _last(*arrs):
+        v = np.concatenate([np.asarray(a, dtype=float) for a in arrs])
+        return np.nanmax(v)
     if comps == "shockwave":
         t0 = np.nanmin(t_sw) - tim["pre_roll"]
-        t1 = np.nanmax(t_sw) + tim["post_roll"]
+        t1 = _last(t_sw, t_swr) + tim["post_roll"]
     elif comps == "muzzle_blast":
         t0 = t_mb.min() - tim["pre_roll"]
-        t1 = t_mb.max() + tim["post_roll"]
+        t1 = _last(t_mb, t_mbr) + tim["post_roll"]
     else:
         t0 = np.nanmin(np.concatenate([t_sw, t_mb])) - tim["pre_roll"]
-        t1 = t_mb.max() + tim["post_roll"]
+        t1 = _last(t_mb, t_mbr, t_swr) + tim["post_roll"]
     t_master = np.arange(t0, t1, 1.0 / FS)
 
     # ---- waveforms -----------------------------------------------------------------------------
@@ -125,6 +183,10 @@ def generate_clean(cfg):
     dP_mb = np.zeros(n_mics)
     att_sw = np.zeros(n_mics)
     att_mb = np.zeros(n_mics)
+    T_Nr = np.full(n_mics, np.nan)
+    dP_swr = np.full(n_mics, np.nan)
+    t_posr = np.full(n_mics, np.nan)
+    dP_mbr = np.full(n_mics, np.nan)
 
     for i in range(n_mics):
         sw = np.zeros(len(t_master))
@@ -149,7 +211,29 @@ def generate_clean(cfg):
         if atmosphere is not None:
             att_mb[i] = float(gp.atmospheric_attenuation_db(1.0 / tp, r_mb[i], **atmosphere))
         dP_mb[i], t_pos[i] = dP, tp
-        signals.append(sw + mb)
+
+        refl = np.zeros(len(t_master))
+        if ground_on and swr_reason[i] is None:
+            g = geo_r[i]
+            M_e = g["M_emit"] if drag else M
+            dP, T = gp.nwave_params(g["b"], M_e, c, bullet, shk["amp_scale"], shk["dur_scale"], p_atm)
+            dP *= gnd["reflection_coeff_sw"]
+            if gen_sw:
+                w = gp.nwave_waveform(t_master, g["t_arrive"], dP, T)
+                if atmosphere is not None:
+                    w = gp.spectral_absorption(w, FS, g["R"], atmosphere)
+                refl += w
+            dP_swr[i], T_Nr[i] = dP, T
+        if ground_on and mbr_reason[i] is None:
+            dP, tp = gp.blast_params(r_mbr[i], w_kg, mbc["amp_scale"], mbc["dur_scale"], p_atm)
+            dP *= gnd["reflection_coeff_mb"]
+            if gen_mb:
+                w = gp.friedlander_waveform(t_master, t_mbr[i], dP, tp)
+                if atmosphere is not None:
+                    w = gp.spectral_absorption(w, FS, r_mbr[i], atmosphere)
+                refl += w
+            dP_mbr[i], t_posr[i] = dP, tp
+        signals.append(sw + mb + refl)
 
     # ---- ground truth ---------------------------------------------------------------------------
     per_mic = []
@@ -171,11 +255,30 @@ def generate_clean(cfg):
             sw_rec.update(t_arrive_s=float(t_sw[i]), t_emit_s=float(g["t_emit"]),
                           acoustic_path_R_m=float(g["R"]), duration_T_N_s=float(T_N[i]),
                           peak_dP_pa=float(dP_sw[i]), atmospheric_attenuation_db=float(att_sw[i]))
-        per_mic.append(dict(
+        rec = dict(
             mic_index=i, shockwave=sw_rec,
             muzzle_blast=dict(generated=bool(gen_mb), t_arrive_s=float(t_mb[i]), range_m=float(r_mb[i]),
                               positive_phase_t_pos_s=float(t_pos[i]), peak_dP_pa=float(dP_mb[i]),
-                              atmospheric_attenuation_db=float(att_mb[i]))))
+                              atmospheric_attenuation_db=float(att_mb[i])))
+        if ground_on:
+            r = swr_reason[i]
+            swr = dict(active=r is None, inactive_reason=r, generated=bool(gen_sw and r is None))
+            if r is None:
+                g = geo_r[i]
+                swr.update(t_arrive_s=float(t_swr[i]),
+                           delay_after_direct_s=(float(t_swr[i] - t_sw[i]) if np.isfinite(t_sw[i]) else None),
+                           perp_dist_b_m=float(g["b"]), acoustic_path_R_m=float(g["R"]),
+                           reflection_point_m=_reflection_point(g["x_emit"], img[i], z_g),
+                           duration_T_N_s=float(T_Nr[i]), peak_dP_pa=float(dP_swr[i]),
+                           reflection_coeff=float(gnd["reflection_coeff_sw"]))
+            r = mbr_reason[i]
+            mbr = dict(active=r is None, inactive_reason=r, generated=bool(gen_mb and r is None))
+            if r is None:
+                mbr.update(t_arrive_s=float(t_mbr[i]), delay_after_direct_s=float(t_mbr[i] - t_mb[i]),
+                           range_m=float(r_mbr[i]), positive_phase_t_pos_s=float(t_posr[i]),
+                           peak_dP_pa=float(dP_mbr[i]), reflection_coeff=float(gnd["reflection_coeff_mb"]))
+            rec.update(shockwave_reflected=swr, muzzle_blast_reflected=mbr)
+        per_mic.append(rec)
 
     active = ~np.isnan(t_sw)
     sep = (t_mb - t_sw)[active] if active.any() else np.array([])
@@ -197,13 +300,20 @@ def generate_clean(cfg):
                              if drag else None),
         models=dict(shockwave="whitham", muzzle_blast="hopkinson_cranz_kinney_graham",
                     absorption="iso_9613_1_minimum_phase", shock_branch_enabled=bool(shock_on),
-                    mach_threshold=shk["mach_threshold"]),
+                    mach_threshold=shk["mach_threshold"],
+                    ground_reflection=("image_source_flat_ground_constant_coefficient" if ground_on else None)),
+        ground=dict(enabled=ground_on, **({"array_height_m": gnd["array_height_m"],
+                                          "ground_plane_z_m": -gnd["array_height_m"],
+                                          "reflection_coeff_sw": gnd["reflection_coeff_sw"],
+                                          "reflection_coeff_mb": gnd["reflection_coeff_mb"]} if ground_on else {})),
         t_master_start_s=float(t0), t_master_end_s=float(t1), n_samples=len(t_master),
         per_mic=per_mic,
         true_tdoa_sw_us=[None if (np.isnan(t_sw[i]) or np.isnan(t_sw[0])) else float((t_sw[i] - t_sw[0]) * 1e6)
                          for i in range(1, n_mics)],
         true_tdoa_mb_us=[float((t_mb[i] - t_mb[0]) * 1e6) for i in range(1, n_mics)],
         tdoa_matrix_sw_us=_matrix_us(t_sw), tdoa_matrix_mb_us=_matrix_us(t_mb),
+        **({"tdoa_matrix_sw_reflected_us": _matrix_us(t_swr),
+            "tdoa_matrix_mb_reflected_us": _matrix_us(t_mbr)} if ground_on else {}),
         dt_mb_minus_sw_centroid_s=(float(np.nanmean(t_mb[active]) - np.nanmean(t_sw[active]))
                                    if active.any() else None),
         checks=checks)
@@ -262,6 +372,11 @@ def main():
     print(f"[Stage 1] Wrote {wav_path} ({len(signals)} ch, {fs} Hz, {len(signals[0]) / fs:.3f} s) and {json_path}")
     print(f"[Stage 1] shock at {ck['n_sensors_with_shock']}/{ck['n_sensors']} sensors; "
           f"min(blast - shock) = {ck['min_blast_minus_shock_s']} s; events overlap = {ck['events_overlap_any']}")
+    if gt["ground"]["enabled"]:
+        d = [pm["shockwave_reflected"].get("delay_after_direct_s") for pm in gt["per_mic"]]
+        d = [v * 1e3 for v in d if v is not None]
+        print(f"[Stage 1] ground reflection on (array {gt['ground']['array_height_m']} m above ground): "
+              + (f"reflected shock {min(d):.2f}-{max(d):.2f} ms after the direct one" if d else "no reflected shock"))
     print(f"[Stage 1] Next: python gs_gen_add_noise.py {wav_path} {args.config}")
 
 

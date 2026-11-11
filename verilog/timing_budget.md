@@ -1,7 +1,7 @@
 # Gunshot Locator — Timing Budget
 
 - **Target platform:** Terasic DE10-Standard (Cyclone V SX 5CSXFC6D6F31C6: FPGA fabric + dual-core Cortex-A9 HPS)
-- **Reference product:** Metravib PILAR-V
+- **Reference product:** PILAR-V
 - **Derived from:** `python/det_config.ini`, `python/gen_config.ini`, `python/project.md`, `verilog/`, `reference/Pilar Accoustic Gunshot 2004.pdf`
 - **Version:** 2026-10-09 (v2: measured values from Milestones A and B; v1 2026-10-08 was the pre-implementation estimate)
 
@@ -43,9 +43,9 @@ Items marked **(verify)** are assumptions, not sourced figures. Values marked **
 
 | Parameter | Value | Source |
 |---|---|---|
-| Array | Tetrahedron, edge L = 0.30 m | `det_config.ini [geometry]` |
+| Array | Tetrahedron, edge L = 0.30 m (`mic_config = Tetrahedral-0,3`, formerly "PilarV") | `det_config.ini [geometry]` |
 | Speed of sound c | 343 m/s | `det_config.ini [physics]` |
-| Max pair TDOA | L / c = 875 µs | derived |
+| Max pair TDOA | L / c = 875 µs (the real PILAR-V sensor, `mic_config = PILAR-V`: 0.356 m / c ≈ 1.04 ms, so ± max_lag must grow ~20 % for it) | derived |
 | SW window | 3 ms pre + 15 ms post | `det_config.ini [tdoa]` |
 | MB window | 6 ms pre + 80 ms post | `det_config.ini [tdoa]` |
 | Max lag | 1 ms | `det_config.ini [tdoa]` |

@@ -44,7 +44,8 @@ Usage
   python gs_det_signal_prepare.py input.wav -mic_config=UMA8         # miniDSP UMA-8 v2 (4 of its mics)
 
 -mic_config selects the installed microphone array ([mic_config.<NAME>] section of
-det_config.ini; default [geometry] mic_config = PilarV). A recording with exactly N channels
+det_config.ini; default [geometry] mic_config = Tetrahedral-0,3; use PILAR-V for the real
+PILAR-V sensor, e.g. the Cipatat recordings). A recording with exactly N channels
 (N = number of mics, e.g. the generator's output) is used as is. A recording with more channels
 is reduced with the preset's channel_map: those .wav channels (0-based) are taken as mics
 0..N-1 (e.g. channels 0,1,3,5 of an 8-channel UMA-8 RAW recording); without a channel_map the
@@ -161,10 +162,14 @@ def apply_calibration_deconvolution(signals, fs, decon_cfg, channel_map=None):
 # with an .ini that predates them; a [mic_config.<NAME>] section in the .ini overrides them key
 # by key. Deliberately an independent copy of the generator's presets (fairness boundary: no
 # imports from gs_gen_*).
-DEFAULT_MIC_CONFIG = "PilarV"
+DEFAULT_MIC_CONFIG = "Tetrahedral-0,3"
 MIC_CONFIG_PRESETS = {
-    # METRAVIB PILAR-V style 4-mic tetrahedron (edge [geometry] l_array, 0.30 m by default)
-    "PilarV": {"array_type": "tetrahedron"},
+    # Regular 4-mic tetrahedron, 0.30 m edge (formerly "PilarV"; simulation default)
+    "Tetrahedral-0,3": {"array_type": "tetrahedron", "l_array": "0.30"},
+    # Real PILAR-V sensor ("Trackball"; Cipatat recordings): ring of 3 mics, radius
+    # 0.2055 m at 0/120/240 deg + 1 mic 0.2412 m above. Frame x = north, y = west, z = up.
+    "PILAR-V": {"array_type": "custom",
+                "mic_positions": "0.2055,0,0; -0.1028,0.178,0; -0.1028,-0.178,0; 0,0,0.2412"},
     # miniDSP UMA-8 v2, 4 of its 7 mics: the centre mic (#0, origin) + ring mics #1, #3, #5
     # (42.5 mm radius, 120 deg apart: an equilateral triangle, 73.6 mm side), all at z = 0.
     # RAW firmware gives 8 channels: channel_map picks recording channels 0, 1, 3, 5.
@@ -181,10 +186,11 @@ def add_mic_config_argument(parser):
     """Add the -mic_config option (also --mic_config / --mic-config) to a stage's argparse parser."""
     parser.add_argument("-mic_config", "--mic_config", "--mic-config", dest="mic_config", default=None,
                         metavar="NAME",
-                        help="installed microphone array preset: PilarV (4-mic tetrahedron) or UMA8 "
+                        help="installed microphone array preset: PILAR-V (the real sensor), "
+                             "Tetrahedral-0,3 (regular tetrahedron, 0.30 m edge) or UMA8 "
                              "(miniDSP UMA-8 v2: centre mic + ring mics #1, #3, #5) -- any [mic_config.NAME] section of the .ini. "
                              "Default: the preset recorded in the upstream stage's .json (Stages 2-4), "
-                             "else [geometry] mic_config in the .ini (PilarV).")
+                             "else [geometry] mic_config in the .ini (Tetrahedral-0,3).")
 
 
 def upstream_mic_config(meta):
@@ -207,10 +213,18 @@ def _parse_xyz_rows(text):
     return rows
 
 
+LEGACY_MIC_CONFIG_NAMES = {"pilarv": "Tetrahedral-0,3"}   # renamed Nov 2026
+
+
 def _resolve_mic_config(cp, name):
     """Geometry dict of the [mic_config.<name>] preset (case-insensitive), falling back to [geometry]."""
     sections = {s.split(".", 1)[1].lower(): s for s in cp.sections() if s.startswith("mic_config.")}
     key = str(name).strip().lower()
+    if key in LEGACY_MIC_CONFIG_NAMES and key not in sections:
+        name = LEGACY_MIC_CONFIG_NAMES[key]
+        print(f"NOTE: mic_config 'PilarV' was renamed to '{name}' (the real sensor is now 'PILAR-V').",
+              file=sys.stderr)
+        key = name.lower()
     if key not in sections:
         valid = ", ".join(s.split(".", 1)[1] for s in sections.values())
         raise ValueError(f"unknown mic_config '{name}' -- valid: {valid} "
@@ -270,21 +284,21 @@ def load_det_config(path, mic_config=None):
                      "mic_positions": "", "mic_positions_file": "", "channel_map": "",
                      "planar_source_side": "above"},
         **{f"mic_config.{k}": v for k, v in MIC_CONFIG_PRESETS.items()},
-        "physics": {"speed_of_sound": "343.0"},
+        "physics": {"speed_of_sound": "343.0", "atmospheric_pressure_pa": "101325.0"},
         "detection": {"method": "classify",
                       "sw_threshold_mult": "10.0", "mb_energy_threshold_mult": "20.0",
                       "dt_min_s": "0.01", "dt_max_s": "5.0", "noise_window_s": "0.005",
-                      "sw_band_hz": "1000,4000", "mb_bands_hz": "100,1000; 300,1000",
-                      "sw_min_hf_snr_db": "25.0", "sw_min_crest_db": "12.0",
-                      "sw_max_rise_ms": "0.08", "sw_max_lf_width_ms": "3.0",
-                      "mb_min_lf_snr_db": "15.0", "mb_max_hf_excess_db": "10.0",
+                      "sw_band_hz": "1000,4000", "mb_bands_hz": "150,1000",
+                      "sw_min_hf_snr_db": "25.0", "sw_min_crest_db": "14.0",
+                      "sw_max_rise_ms": "0.08", "sw_max_lf_width_ms": "0.0",
+                      "mb_min_lf_snr_db": "11.0", "mb_max_hf_excess_db": "10.0", "mb_min_prominence_db": "6.0",
                       "mb_in_tail": "false"},
         "tdoa": {"interp_factor": "16", "sw_window_pre_s": "0.003", "sw_window_post_s": "0.015",
                  "mb_window_pre_s": "0.006", "mb_window_post_s": "0.080", "max_lag_s": "0.001"},
         "bullet_reference_library": {"calibers": "5.56_NATO,7.62_NATO",
-                                      "5.56_NATO_L": "0.023", "5.56_NATO_dP0_sw": "7.5", "5.56_NATO_b0_sw": "50.0",
-                                      "7.62_NATO_L": "0.028", "7.62_NATO_dP0_sw": "7.5", "7.62_NATO_b0_sw": "50.0"},
-        "calibration": {"assumed_peak_pa_at_full_scale": "175.0"},
+                                      "5.56_NATO_d": "0.0057", "5.56_NATO_L": "0.023", "5.56_NATO_v0": "940",
+                                      "7.62_NATO_d": "0.00782", "7.62_NATO_L": "0.0285", "7.62_NATO_v0": "850"},
+        "calibration": {"assumed_peak_pa_at_full_scale": "1520.0"},
         "deconvolution": {"enabled": "false", "calibration_wav": "",
                           "sweep_f0_hz": "40.0", "sweep_f1_hz": "20000.0",
                           "sweep_duration_s": "1.0", "rir_length_s": "2.0",
@@ -297,16 +311,27 @@ def load_det_config(path, mic_config=None):
             print(f"WARNING: config file '{path}' not found -- using built-in defaults.", file=sys.stderr)
 
     calibers = [c.strip() for c in cp.get("bullet_reference_library", "calibers").split(",")]
+    def _opt(cal, key):
+        k = f"{cal}_{key}"
+        return cp.getfloat("bullet_reference_library", k) if cp.has_option("bullet_reference_library", k) else None
     bullet_library = {
-        cal: dict(L=cp.getfloat("bullet_reference_library", f"{cal}_L"),
-                  dP0_sw=cp.getfloat("bullet_reference_library", f"{cal}_dP0_sw"),
-                  b0_sw=cp.getfloat("bullet_reference_library", f"{cal}_b0_sw"))
+        cal: dict(d=cp.getfloat("bullet_reference_library", f"{cal}_d"),
+                  L=cp.getfloat("bullet_reference_library", f"{cal}_L"),
+                  v0=_opt(cal, "v0"), lam=_opt(cal, "lam"))
         for cal in calibers
     }
 
+    geometry = _resolve_mic_config(cp, mic_config or cp.get("geometry", "mic_config"))
+    # Full-scale calibration: a per-array override (assumed_peak_pa_at_full_scale.<mic_config>)
+    # wins over the generic value.
+    fs_key = f"assumed_peak_pa_at_full_scale.{geometry.get('mic_config', '')}"
+    fs_pa = (cp.getfloat("calibration", fs_key) if cp.has_option("calibration", fs_key)
+             else cp.getfloat("calibration", "assumed_peak_pa_at_full_scale"))
+
     return {
-        "geometry": _resolve_mic_config(cp, mic_config or cp.get("geometry", "mic_config")),
-        "physics": dict(speed_of_sound=cp.getfloat("physics", "speed_of_sound")),
+        "geometry": geometry,
+        "physics": dict(speed_of_sound=cp.getfloat("physics", "speed_of_sound"),
+                        atmospheric_pressure_pa=cp.getfloat("physics", "atmospheric_pressure_pa")),
         "detection": dict(method=cp.get("detection", "method").strip().lower(),
                            sw_band_hz=_parse_band(cp.get("detection", "sw_band_hz")),
                            mb_bands_hz=[_parse_band(b) for b in cp.get("detection", "mb_bands_hz").split(";")
@@ -317,6 +342,7 @@ def load_det_config(path, mic_config=None):
                            sw_max_lf_width_ms=cp.getfloat("detection", "sw_max_lf_width_ms"),
                            mb_min_lf_snr_db=cp.getfloat("detection", "mb_min_lf_snr_db"),
                            mb_max_hf_excess_db=cp.getfloat("detection", "mb_max_hf_excess_db"),
+                           mb_min_prominence_db=cp.getfloat("detection", "mb_min_prominence_db"),
                            mb_in_tail=cp.getboolean("detection", "mb_in_tail"),
                            sw_threshold_mult=cp.getfloat("detection", "sw_threshold_mult"),
                            mb_energy_threshold_mult=cp.getfloat("detection", "mb_energy_threshold_mult"),
@@ -330,7 +356,7 @@ def load_det_config(path, mic_config=None):
                      mb_window_post_s=cp.getfloat("tdoa", "mb_window_post_s"),
                      max_lag_s=cp.getfloat("tdoa", "max_lag_s")),
         "bullet_reference_library": bullet_library,
-        "calibration": dict(assumed_peak_pa_at_full_scale=cp.getfloat("calibration", "assumed_peak_pa_at_full_scale")),
+        "calibration": dict(assumed_peak_pa_at_full_scale=fs_pa),
         "deconvolution": dict(enabled=cp.getboolean("deconvolution", "enabled"),
                                calibration_wav=cp.get("deconvolution", "calibration_wav"),
                                sweep_f0_hz=cp.getfloat("deconvolution", "sweep_f0_hz"),

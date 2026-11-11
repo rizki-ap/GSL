@@ -1,0 +1,387 @@
+{
+  "generated_at_utc": "2026-11-10T20:00:32+00:00",
+  "generator": "util_gen_cipatat_clean.py (gs_gen_clean_signal.generate_clean)",
+  "source_recording": "shot-06a_audio_4ch_cut.wav",
+  "wav_file": "shot-06a_audio_4ch_clean.wav",
+  "format": {
+    "channels": 4,
+    "sample_rate_hz": 51200,
+    "subtype": "PCM_24",
+    "samples": 563200,
+    "value_scale": "full scale = 1520 Pa (estimate)",
+    "synthesis_rate_hz": 512000
+  },
+  "contents": "shockwave + muzzle blast only: no noise, no reverberation, no ground reflection, no echoes",
+  "fitted_to_recording": true,
+  "alignment": "per channel: each event at the recording's arrival on every channel (TDOAs of the recording)",
+  "scene": {
+    "weapon": "STEYR",
+    "calibre": "12.7x99",
+    "azimuth_deg": 11,
+    "elevation_deg": 2,
+    "distance_m": 764,
+    "miss_distance_m": 30,
+    "air_temp_c": 35,
+    "speed_of_sound_mps": 351.8859440791726,
+    "bullet": {
+      "d": 0.01295,
+      "L": 0.058,
+      "v0": 890.0,
+      "lam": 2500.0
+    },
+    "drag_model": "exponential",
+    "humidity_pct": 50.0,
+    "bullet_side": "+",
+    "side_tdoa_rms_us": {
+      "+": 89.13096935148313,
+      "-": 704.1210205594685
+    },
+    "shooter_pos_m": [
+      749.5063108553026,
+      -145.68926840472463,
+      26.66321548071074
+    ],
+    "trajectory_direction": [
+      -0.9877605227725045,
+      0.15202359942489474,
+      -0.03489949670250097
+    ],
+    "mic_positions_m": [
+      [
+        0.2055,
+        0.0,
+        0.0
+      ],
+      [
+        -0.1028,
+        0.178,
+        0.0
+      ],
+      [
+        -0.1028,
+        -0.178,
+        0.0
+      ],
+      [
+        0.0,
+        0.0,
+        0.2412
+      ]
+    ],
+    "frame": "x = north, y = west, z = up; azimuth clockwise from north"
+  },
+  "events": [
+    {
+      "index": 1,
+      "shockwave": {
+        "amp_scale": 1.221499306112092,
+        "dur_scale": 1.0563455399595205,
+        "time_shift_s": 8.96792724609375,
+        "channel_shift_us": [
+          -14.6484375,
+          2.44140625,
+          31.73828125,
+          -161.1328125
+        ],
+        "t_arrive_s": [
+          10.042834058507284,
+          10.043663297096717,
+          10.042764367738261,
+          10.04290874444713
+        ],
+        "tdoa_model_us": [
+          812.1487456840271,
+          -116.07748777175964,
+          221.17031484736316
+        ],
+        "tdoa_clean_us": [
+          829.238589434178,
+          -69.69076902163529,
+          74.68593984749639
+        ],
+        "model": {
+          "peak_pa": [
+            124.09170835114996,
+            123.68883651618523,
+            124.78002358875895,
+            124.18258660267712
+          ],
+          "T_N_s": [
+            0.0004237758130882619,
+            0.00042423249318087247,
+            0.0004229903058794165,
+            0.0004236699236988318
+          ],
+          "miss_distance_b_m": [
+            30.01299743004384,
+            30.142020081290788,
+            29.7901641227386,
+            29.982535643388044
+          ],
+          "mach_emit": [
+            1.8779550963306484,
+            1.8777689667327528,
+            1.8776446389574453,
+            1.8777962257093317
+          ]
+        },
+        "measured": {
+          "t_s": 10.0430029296875,
+          "onset_s": [
+            10.04279296875,
+            10.04361328125,
+            10.042734375,
+            10.04287109375
+          ],
+          "peak_pa": [
+            135.62320735143518,
+            73.91894535528651,
+            162.69362351994636,
+            123.9166764342607
+          ],
+          "T_N_s": [
+            0.00045654296875,
+            0.00046142578125,
+            0.000458984375,
+            0.0004541015625
+          ],
+          "polarity": [
+            1,
+            1,
+            1,
+            1
+          ],
+          "tdoa_us": [
+            820.3125000001421,
+            -58.59374999950262,
+            78.12499999992895
+          ]
+        },
+        "clean": {
+          "onset_s": [
+            10.04283203125,
+            10.04365234375,
+            10.04275390625,
+            10.042890625
+          ],
+          "peak_pa": [
+            123.93288442797511,
+            123.24413145076136,
+            124.12305428633789,
+            124.45292965159852
+          ],
+          "T_N_s": [
+            0.00045654296875,
+            0.00045654296875,
+            0.0004541015625,
+            0.000458984375
+          ]
+        },
+        "pearson_r": [
+          0.8479333670900218,
+          0.8639405544333665,
+          0.8861945786352685,
+          0.8904491636863543
+        ],
+        "tdoa_err_us": [
+          0.0,
+          -19.531250000426326,
+          -19.531250000426326
+        ]
+      },
+      "muzzle_blast": {
+        "amp_scale": 0.08467147848386054,
+        "dur_scale": 6.750748749367961,
+        "time_shift_s": 8.96792724609375,
+        "channel_shift_us": [
+          0.0,
+          0.0,
+          0.0,
+          0.0
+        ],
+        "t_arrive_s": [
+          11.138512381389573,
+          11.139468399495023,
+          11.139275502728946,
+          11.139061481844259
+        ],
+        "tdoa_model_us": [
+          956.0181054495409,
+          763.1213393723967,
+          549.1004546858136
+        ],
+        "tdoa_clean_us": [
+          956.0181054495409,
+          763.1213393723967,
+          549.1004546858136
+        ],
+        "model": {
+          "peak_pa": [
+            13.829062697391716,
+            13.822974464540875,
+            13.824202461873924,
+            13.825565192512984
+          ],
+          "t_pos_s": [
+            0.000530836679812758,
+            0.0005308366801154429,
+            0.000530836680054403,
+            0.0005308366799866573
+          ],
+          "range_m": [
+            763.7983995377895,
+            764.1348088713823,
+            764.0669312107415,
+            763.9916202696809
+          ]
+        },
+        "measured": null,
+        "levels_from": "shot-06",
+        "t_s": 11.13907944136445,
+        "inside_file": false
+      }
+    }
+  ],
+  "ground_truth_shockwave_model": {
+    "bullet_speed_mps": 889.9999999999999,
+    "mach": 2.5292286178948777,
+    "decay_length_m": 2500.0,
+    "tdoa_matrix_sw_us": [
+      [
+        0.0,
+        -812.1487456840271,
+        116.07748777175964,
+        -221.17031484736316
+      ],
+      [
+        812.1487456840271,
+        0.0,
+        928.2262334557867,
+        590.9784308366638
+      ],
+      [
+        -116.07748777175964,
+        -928.2262334557867,
+        0.0,
+        -337.2478026191228
+      ],
+      [
+        221.17031484736316,
+        -590.9784308366638,
+        337.2478026191228,
+        0.0
+      ]
+    ],
+    "per_mic": [
+      {
+        "mic_index": 0,
+        "shockwave": {
+          "active": true,
+          "inactive_reason": null,
+          "generated": true,
+          "along_track_a_m": 763.2085004255082,
+          "perp_dist_b_m": 30.01299743004384,
+          "emission_coord_s_m": 744.3272300098135,
+          "mach_emit": 1.8779550963306484,
+          "bullet_speed_emit_mps": 660.8260020106037,
+          "t_arrive_s": 1.074921460851034,
+          "t_emit_s": 0.9741553501297344,
+          "acoustic_path_R_m": 35.458178002350934,
+          "duration_T_N_s": 0.0004476536900985049,
+          "peak_dP_pa": 151.57793564519378,
+          "atmospheric_attenuation_db": 0.5471686342174902
+        },
+        "muzzle_blast": {
+          "generated": false,
+          "t_arrive_s": 2.1705851352958234,
+          "range_m": 763.7983995377895,
+          "positive_phase_t_pos_s": 0.000530836679812758,
+          "peak_dP_pa": 13.829062697391716,
+          "atmospheric_attenuation_db": 10.45397953209831
+        }
+      },
+      {
+        "mic_index": 1,
+        "shockwave": {
+          "active": true,
+          "inactive_reason": null,
+          "generated": true,
+          "along_track_a_m": 763.5400871953766,
+          "perp_dist_b_m": 30.142020081290788,
+          "emission_coord_s_m": 744.5750245694283,
+          "mach_emit": 1.8777689667327528,
+          "bullet_speed_emit_mps": 660.7605056213272,
+          "t_arrive_s": 1.075733609596718,
+          "t_emit_s": 0.9745303457256934,
+          "acoustic_path_R_m": 35.612006051149095,
+          "duration_T_N_s": 0.00044813610207752235,
+          "peak_dP_pa": 151.08582797833225,
+          "atmospheric_attenuation_db": 0.5491141712407217
+        },
+        "muzzle_blast": {
+          "generated": false,
+          "t_arrive_s": 2.171541153401273,
+          "range_m": 764.1348088713823,
+          "positive_phase_t_pos_s": 0.0005308366801154429,
+          "peak_dP_pa": 13.822974464540877,
+          "atmospheric_attenuation_db": 10.458583905638571
+        }
+      },
+      {
+        "mic_index": 2,
+        "shockwave": {
+          "active": true,
+          "inactive_reason": null,
+          "generated": true,
+          "along_track_a_m": 763.4859667939813,
+          "perp_dist_b_m": 29.7901641227386,
+          "emission_coord_s_m": 744.740555970769,
+          "mach_emit": 1.8776446389574453,
+          "bullet_speed_emit_mps": 660.7167564247378,
+          "t_arrive_s": 1.0748053833632623,
+          "t_emit_s": 0.9747808705076414,
+          "acoustic_path_R_m": 35.197220137259514,
+          "duration_T_N_s": 0.000446823923061835,
+          "peak_dP_pa": 152.41871223031953,
+          "atmospheric_attenuation_db": 0.5438720184901558
+        },
+        "muzzle_blast": {
+          "generated": false,
+          "t_arrive_s": 2.171348256635196,
+          "range_m": 764.0669312107415,
+          "positive_phase_t_pos_s": 0.000530836680054403,
+          "peak_dP_pa": 13.824202461873924,
+          "atmospheric_attenuation_db": 10.457654876406995
+        }
+      },
+      {
+        "mic_index": 3,
+        "shockwave": {
+          "active": true,
+          "inactive_reason": null,
+          "generated": true,
+          "along_track_a_m": 763.4030674543333,
+          "perp_dist_b_m": 29.982535643388044,
+          "emission_coord_s_m": 744.5387331256873,
+          "mach_emit": 1.8777962257093317,
+          "bullet_speed_emit_mps": 660.7700976720353,
+          "t_arrive_s": 1.0751426311658814,
+          "t_emit_s": 0.9744754223759777,
+          "acoustic_path_R_m": 35.423375802850394,
+          "duration_T_N_s": 0.0004475418343142513,
+          "peak_dP_pa": 151.68894336637487,
+          "atmospheric_attenuation_db": 0.5467304995052855
+        },
+        "muzzle_blast": {
+          "generated": false,
+          "t_arrive_s": 2.1711342357505092,
+          "range_m": 763.9916202696809,
+          "positive_phase_t_pos_s": 0.0005308366799866573,
+          "peak_dP_pa": 13.825565192512984,
+          "atmospheric_attenuation_db": 10.456624109214458
+        }
+      }
+    ]
+  },
+  "peak_fs": 0.08372781562234183
+}

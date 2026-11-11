@@ -2,7 +2,7 @@
 research about implementation of Gunshot Locator 
 
 Product Reference : 
-1. Metravib PILAR-V. Link :
+1. PILAR-V. Link :
 2. Boomerang
 
 Publication Reference : 

@@ -1,633 +1,667 @@
 #!/usr/bin/env python3
 """
 util_signal_similarity.py
-=====================
-Standalone toolkit for quantifying how similar two acoustic signals are --
-e.g. a simulated gunshot channel vs. a real recording, or any two .wav files.
+=========================
+Similarity between MEASURED and SYNTHESIZED gunshot recordings, following the
+evaluation of publication/Paper-Generator.md, Section 4.3:
 
-Works as:
-  1. A library:  `from util_signal_similarity import compare_signals`
-  2. A CLI tool: `python util_signal_similarity.py sig1.wav sig2.wav`
+  4.3.1 waveform morphology   Pearson r, SNR_synth, peak error, duration error
+                              (T_N of the N-wave / positive-phase T_mb of the blast,
+                              MEASURED from each signal)
+  4.3.2 frequency domain      Tukey-window event PSD (4096-point zero padding), averaged
+                              over channels and recordings; LSD; blast peak frequency
+                              (Friedlander f_pk = 1 / (2 pi T_mb)); N-wave first null
+                              (f_null ~ 1.43 / T_N); ensemble (pooled) coherence and its
+                              > 0.8 bandwidth -- reported ONLY when enough segments are
+                              pooled (default K >= 8), otherwise it is trivially ~1
+  4.3.3 timing / TDOA         inter-channel TDOAs of each event (GCC-PHAT or plain
+                              cross-correlation, sinc-upsampled peak) of the synthesized
+                              signal vs the measured one (or vs reference TDOAs):
+                              MAE, RMSE, Bias over all pairs i < j, plus the N-1
+                              independent pairs (reference channel 0)
+  4.3.4 shock-to-blast delay  per-channel delay t_mb - t_sw, synthesized vs measured
 
-No dependency on any specific notebook/pipeline -- only numpy/scipy.
-
-Metrics reported
------------------
-- Pearson correlation coefficient (zero lag) -- THE standard academic
-  parameter for signal similarity, bounded [-1, +1]. Cited across signal
-  processing, seismology, and time-series literature generally (e.g.
-  Bendat & Piersol, "Random Data: Analysis and Measurement Procedures").
-  rho(x,y) = (1/(N-1)) * sum_i [(x_i-mean(x))/std(x)] * [(y_i-mean(y))/std(y)]
-- Cross-correlation coefficient at its best-aligning lag -- the same
-  parameter as a function of time shift tau, since two physically similar
-  signals are rarely perfectly aligned to begin with; reduces to the above
-  at tau=0.
-- Magnitude-squared coherence (frequency-domain analogue, band-averaged) --
-  the other measure academic sources consistently recommend alongside
-  cross-correlation for signal similarity.
-- Peak/noise SNR (amplitude-domain)
-- PSD slope (dB/decade) + PSD shape correlation (spectral coloring, level-
-  independent)
-- RT60 via Schroeder (1965) backward energy integration
-- Onset half-period (a cheap proxy for pulse duration, e.g. N-wave T_N/2)
-
-A second suite (compare_signals_ml / --suite ml) adds the metrics standard
-in audio-ML / TTS / vocoder evaluation literature (not classical acoustics --
-see that section's docstring for the distinction): RMSE (time, aligned),
-cross-correlation, Log-Spectral Distance, Mel-Spectrogram MSE/SSIM, MFCC
-cosine similarity (naive AND event-windowed -- the naive version has a
-documented failure mode on mostly-silent recordings), and DTW distance.
+Both signals are high-passed (2nd-order, zero-phase) at the lower edge of each event's band
+before windowing -- the generator does not model wind, recoil or drift (--no-highpass).
+Event windows are found automatically with the detector's own classifier
+(gs_det_events.detect_sw_mb) or given by hand. Amplitudes are never normalized
+(the paper evaluates amplitude fidelity); give both files in the same units.
 
 Usage
 -----
-  python util_signal_similarity.py real.wav sim.wav                  # both suites
-  python util_signal_similarity.py real.wav sim.wav --suite ml        # just the ML suite
-  python util_signal_similarity.py real.wav sim.wav --plot out_dir/
+  python util_signal_similarity.py measured.wav synthetic.wav
+  python util_signal_similarity.py meas.wav synth.wav --event nwave --channels 1 2 3 4
+  python util_signal_similarity.py --pair m1.wav s1.wav --pair m2.wav s2.wav --json table.json
+  python util_signal_similarity.py meas.wav synth.wav --meas-sw-ms 1699.3 --synth-sw-ms 50.2
+  python util_signal_similarity.py meas.wav synth.wav --plot out_dir
+
+Options (main ones; see --help)
+  --event nwave|blast|both   which events to evaluate (default both)
+  --channels 1 2 ...         1-based channels (default: all channels common to both files)
+  --nwave-window-ms 1.5      N-wave window length (starts 0.25 ms before the onset)
+  --blast-window-ms 20       blast window length (starts 2 ms before the onset)
+  --nwave-band 200 F         N-wave band (default 200 Hz to min(20 kHz, 0.45 fs): the null
+                             1.43/T_N lies near 5-7 kHz for T_N = 0.2-0.3 ms)
+  --blast-band 50 4000       blast band (paper Table 2)
+  --min-segments 8           coherence is reported only with at least this many segments
+  --tdoa gcc|xcorr           TDOA estimator (default xcorr: GCC-PHAT fails on recordings
+                             with common-mode noise, e.g. Cipatat)
+  --synth-json GEN.json      generator JSON (repeat per pair): synthetic event times per
+                             channel and model TDOA labels; TDOAs are then reported as
+                             MEASURED vs model labels (paper 4.3.3)
+  --meas-scale / --synth-scale  multiply the samples (e.g. --meas-scale 1520: PILAR-V FS to Pa;
+                             the generator's *_clean.wav is already in Pa)
+  --ref-tdoa FILE.json       reference TDOAs {"nwave": {"0,1": s, ...}, "blast": {...}}
 
 As a library:
-  import numpy as np
-  from util_signal_similarity import compare_signals, compare_signals_ml
-  report = compare_signals(x1, fs1, x2, fs2, label1="Real", label2="Sim")
-  report_ml = compare_signals_ml(x1, fs1, x2, fs2, label1="Real", label2="Sim")
+  from util_signal_similarity import load_wav, evaluate
+  per_pair, summary = evaluate([(meas_x, meas_fs, synth_x, synth_fs)], event="both")
 """
 
 import argparse
+import json
+import os
 import sys
+import warnings
+from math import gcd
 
 import numpy as np
-from scipy.io import wavfile
-from scipy.signal import welch, coherence, resample_poly, correlate, stft as scipy_stft
-from scipy.ndimage import uniform_filter
-from scipy.fftpack import dct
+from scipy.signal import (butter, correlate, find_peaks, resample_poly, savgol_filter,
+                          sosfiltfilt, welch)
+from scipy.signal.windows import tukey
 
-
-# ---------------------------------------------------------------------------
-# Loading
-# ---------------------------------------------------------------------------
-def load_wav_normalized(path):
-    """Load a .wav, take channel 0 if multichannel, normalize to peak = 1."""
-    fs, x = wavfile.read(path)
-    x = x.astype(np.float64)
-    if x.ndim > 1:
-        x = x[:, 0]
-    peak = np.abs(x).max()
-    if peak > 0:
-        x = x / peak
-    return fs, x
-
-
-def match_sample_rates(x1, fs1, x2, fs2, target_fs=None):
-    """Resample both signals to a common rate (needed for cross-correlation
-    and coherence, which assume a shared sample rate). PSD/RT60/onset metrics
-    don't need this since they're computed independently per signal."""
-    if target_fs is None:
-        target_fs = min(fs1, fs2)
-
-    def _resample(x, fs):
-        if fs == target_fs:
-            return x
-        from math import gcd
-        g = gcd(int(fs), int(target_fs))
-        return resample_poly(x, int(target_fs) // g, int(fs) // g)
-
-    return _resample(x1, fs1), _resample(x2, fs2), target_fs
-
-
-# ---------------------------------------------------------------------------
-# Amplitude / SNR
-# ---------------------------------------------------------------------------
-def amplitude_stats(x, fs, noise_window_s=0.005):
-    n = max(1, int(noise_window_s * fs))
-    noise_rms = np.sqrt(np.mean(x[:n] ** 2))
-    peak = np.abs(x).max()
-    return dict(
-        noise_rms=noise_rms,
-        peak=peak,
-        snr_db=20 * np.log10(peak / (noise_rms + 1e-12)),
-    )
-
-
-# ---------------------------------------------------------------------------
-# Time-domain similarity: the (Pearson) cross-correlation coefficient
-# ---------------------------------------------------------------------------
-#
-# THE standard academic parameter for signal similarity. Bounded in [-1, +1]:
-# +1 = perfect linear match, -1 = perfect inverted match, 0 = uncorrelated.
-# It's the cross-correlation function normalized so it reduces to the
-# ordinary Pearson correlation coefficient at zero lag:
-#
-#     rho(x,y) = (1/(N-1)) * sum_i [(x_i - mean(x))/std(x)] * [(y_i - mean(y))/std(y)]
-#
-# References: Bendat & Piersol, "Random Data: Analysis and Measurement
-# Procedures" (the standard signal-processing reference for this); widely
-# used the same way in seismology (cross-correlation of waveforms),
-# neuroscience/fMRI connectivity, and time-series similarity generally.
-# Reported here at its best-aligning lag, since two physically-similar
-# signals are rarely perfectly time-aligned to begin with.
-
-def pearson_correlation_coefficient(x, y):
-    """Standard Pearson correlation coefficient at zero lag (no shifting).
-    Requires x and y to be the same length."""
-    x = x - x.mean()
-    y = y - y.mean()
-    denom = (np.std(x) * np.std(y) * len(x))
-    if denom < 1e-20:
-        return np.nan
-    return float(np.sum(x * y) / denom)
-
-
-def cross_correlation_coefficient(x1, x2, fs, max_lag_s=None):
-    """Cross-correlation coefficient (mean-subtracted, std-normalized) as a
-    function of lag; returns the value AND lag at the best-aligning point.
-    This is the textbook cross-correlation coefficient function rho(tau),
-    reduces to pearson_correlation_coefficient() at tau=0."""
-    a = x1 - x1.mean()
-    b = x2 - x2.mean()
-    norm = np.std(a) * np.std(b) * min(len(a), len(b))
-    if norm < 1e-20:
-        return np.nan, 0.0
-    corr = correlate(a, b, mode="full") / norm
-    lags = np.arange(-len(b) + 1, len(a))
-    if max_lag_s is not None:
-        max_lag_n = int(max_lag_s * fs)
-        mask = np.abs(lags) <= max_lag_n
-        corr, lags = corr[mask], lags[mask]
-    idx = np.argmax(np.abs(corr))
-    # NOTE: scipy.signal.correlate's native lag sign is the OPPOSITE of the
-    # intuitive "positive lag = x2 arrives after x1" convention -- verified
-    # empirically with a two-impulse test case. Negate it here so the
-    # reported lag means what it says.
-    return float(corr[idx]), -lags[idx] / fs
-
-
-# ---------------------------------------------------------------------------
-# Frequency-domain similarity
-# ---------------------------------------------------------------------------
-def psd_welch(x, fs, nperseg=2048):
-    return welch(x, fs=fs, nperseg=min(nperseg, len(x)))
-
-
-def psd_slope_fit(f, Pxx, f_lo=100, f_hi=10000):
-    """Fit dB/decade slope of the PSD over [f_lo, f_hi] Hz."""
-    mask = (f >= f_lo) & (f <= f_hi) & (Pxx > 0)
-    if mask.sum() < 3:
-        return np.nan
-    logf, logP = np.log10(f[mask]), 10 * np.log10(Pxx[mask])
-    slope, _ = np.polyfit(logf, logP, 1)
-    return slope
-
-
-def psd_shape_correlation(f1, Pxx1, f2, Pxx2, f_lo=100, f_hi=10000, n_bins=50):
-    """Correlate log-PSD SHAPE (mean-removed) on a shared log-frequency grid --
-    isolates spectral coloring from absolute level."""
-    f_hi = min(f_hi, f1.max(), f2.max())
-    common_f = np.logspace(np.log10(f_lo), np.log10(f_hi), n_bins)
-    logP1 = np.interp(common_f, f1, 10 * np.log10(Pxx1 + 1e-20))
-    logP2 = np.interp(common_f, f2, 10 * np.log10(Pxx2 + 1e-20))
-    logP1 = logP1 - logP1.mean()
-    logP2 = logP2 - logP2.mean()
-    return float(np.corrcoef(logP1, logP2)[0, 1])
-
-
-def band_averaged_coherence(x1, x2, fs, f_lo=100, f_hi=10000, nperseg=2048):
-    """Magnitude-squared coherence, averaged over [f_lo, f_hi]. Requires both
-    signals at the SAME sample rate and comparable length/alignment -- this
-    is the strictest metric here since it's sensitive to phase, not just
-    magnitude shape."""
-    n = min(len(x1), len(x2))
-    f, Cxy = coherence(x1[:n], x2[:n], fs=fs, nperseg=min(nperseg, n))
-    mask = (f >= f_lo) & (f <= f_hi)
-    return float(np.mean(Cxy[mask])) if mask.any() else np.nan
-
-
-# ---------------------------------------------------------------------------
-# Reverberation: Schroeder RT60
-# ---------------------------------------------------------------------------
-def schroeder_edc_db(x, fs):
-    """Backward-integrated (Schroeder 1965) energy decay curve, in dB."""
-    edc = np.cumsum((x[::-1].astype(np.float64)) ** 2)[::-1]
-    edc = edc / (edc[0] + 1e-20)
-    return np.arange(len(x)) / fs, 10 * np.log10(edc + 1e-20)
-
-
-def estimate_rt60_schroeder(x, fs, fit_range_db=(-5, -25)):
-    t, edc_db = schroeder_edc_db(x, fs)
-    hi, lo = fit_range_db
-    mask = (edc_db <= hi) & (edc_db >= lo)
-    if mask.sum() < 10:
-        return np.nan
-    slope, _ = np.polyfit(t[mask], edc_db[mask], 1)
-    return -60.0 / slope if slope < 0 else np.nan
-
-
-# ---------------------------------------------------------------------------
-# Onset / pulse-shape proxy
-# ---------------------------------------------------------------------------
-def find_loudest_onset(x, fs, thresh_mult=8.0, noise_window_s=0.005):
-    n = max(1, int(noise_window_s * fs))
-    noise_rms = np.sqrt(np.mean(x[:n] ** 2))
-    idx = np.where(np.abs(x) > thresh_mult * noise_rms)[0]
-    return (int(idx[0]), noise_rms) if len(idx) else (None, noise_rms)
-
-
-def event_shape_params(x, fs, onset_idx, win_s=0.010):
-    """Half-period of the first zero-crossing after onset. A cheap duration
-    proxy (e.g. comparable to N-wave T_N/2) -- not a substitute for fitting
-    the actual expected pulse shape, but useful as a fast sanity check."""
-    if onset_idx is None:
-        return dict(peak=np.nan, half_period_ms=np.nan)
-    seg = x[onset_idx: onset_idx + int(win_s * fs)]
-    zc = np.where(np.diff(np.sign(seg)))[0]
-    return dict(
-        peak=float(seg[np.argmax(np.abs(seg))]) if len(seg) else np.nan,
-        half_period_ms=(zc[0] / fs * 1e3) if len(zc) else np.nan,
-    )
+_trapz = getattr(np, "trapezoid", None) or np.trapz          # numpy 2.x / 1.x
 
 
 # ===========================================================================
-# Audio-ML / TTS-style similarity suite
+# I/O
 # ===========================================================================
-# The metrics below (RMSE-time, LSD, Mel-Spec MSE/SSIM, MFCC cosine sim,
-# DTW) are the standard evaluation battery used in speech-synthesis/vocoder
-# literature (Tacotron/WaveNet-era TTS papers, singing-voice-synthesis,
-# text-to-audio generation), not classical acoustics -- see the discussion
-# in this module's usage notes. Included here because they're commonly
-# requested alongside the classical metrics above, but note they were
-# designed for continuous speech, not brief impulsive transients, and at
-# least one of them (naive MFCC cosine similarity) has a specific failure
-# mode on mostly-silent recordings -- see mfcc_cosine_similarity_naive().
-
-def align_signals(x1, x2, fs, max_lag_s=0.05):
-    """Shift x2 to best-align with x1 (via cross-correlation), then crop to
-    the overlapping region. Returns (x1_aligned, x2_aligned, lag_s), where
-    lag_s > 0 means x2's content arrives AFTER x1's."""
-    a = x1 - x1.mean()
-    b = x2 - x2.mean()
-    norm = np.std(a) * np.std(b) * min(len(a), len(b))
-    corr = correlate(a, b, mode="full") / (norm + 1e-20)
-    raw_lags = np.arange(-len(b) + 1, len(a))
-    max_lag_n = int(max_lag_s * fs)
-    mask = np.abs(raw_lags) <= max_lag_n
-    corr_m, raw_lags_m = corr[mask], raw_lags[mask]
-    raw_lag = int(raw_lags_m[np.argmax(np.abs(corr_m))])
-    lag = -raw_lag  # match cross_correlation_coefficient's convention
-
-    if lag >= 0:
-        a_al = x1[: len(x1) - lag] if lag > 0 else x1
-        b_al = x2[lag:]
-    else:
-        a_al = x1[-lag:]
-        b_al = x2[: len(x2) + lag] if lag < 0 else x2
-    n = min(len(a_al), len(b_al))
-    return a_al[:n], b_al[:n], lag / fs
+def load_wav(path, channels=None):
+    """(fs, x[n, ch]) as float64 in the file's own scale (integer PCM -> +-1 full scale,
+    float WAV unchanged). No normalization. channels: 0-based list or None (all)."""
+    try:
+        import soundfile as sf
+        x, fs = sf.read(path, dtype="float64", always_2d=True)
+    except ImportError:
+        from scipy.io import wavfile
+        fs, x = wavfile.read(path)
+        if np.issubdtype(x.dtype, np.integer):
+            x = x.astype(np.float64) / float(np.iinfo(x.dtype).max)
+        x = np.atleast_2d(np.asarray(x, dtype=np.float64))
+        if x.shape[0] < x.shape[1]:
+            x = x.T
+    if channels is not None:
+        x = x[:, [c for c in channels if c < x.shape[1]]]
+    return int(fs), x
 
 
-def rmse_time(x1, x2):
-    """Root-mean-square error, time domain. Extremely sensitive to
-    misalignment -- a single-sample shift on an impulsive signal can
-    dominate this. Always align signals first (see align_signals)."""
-    n = min(len(x1), len(x2))
-    return float(np.sqrt(np.mean((x1[:n] - x2[:n]) ** 2)))
+def to_rate(x, fs, fs_target):
+    if int(fs) == int(fs_target):
+        return x
+    g = gcd(int(fs), int(fs_target))
+    return resample_poly(x, int(fs_target) // g, int(fs) // g, axis=0)
 
 
-def _stft_power(x, fs, n_fft=1024, hop=256):
-    f, t, Z = scipy_stft(x, fs=fs, nperseg=n_fft, noverlap=n_fft - hop, boundary=None)
-    return f, t, np.abs(Z) ** 2
+def bandpass(x, fs, lo, hi, order=4):
+    hi = min(hi, 0.45 * fs)
+    sos = butter(order, [lo, hi], btype="band", fs=fs, output="sos")
+    return sosfiltfilt(sos, x, axis=0)
 
 
-def hz_to_mel(f):
-    return 2595.0 * np.log10(1.0 + f / 700.0)
+# ===========================================================================
+# Events: automatic windows
+# ===========================================================================
+def detect_events(x, fs):
+    """Array-level (t_sw, t_mb) in s from gs_det_events (None when absent)."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import gs_det_events as ge
+    except ImportError:
+        warnings.warn("gs_det_events not found -- give the event times by hand")
+        return None, None
+    r = ge.detect_sw_mb(x - x.mean(axis=0), fs)
+    return r.get("t_sw"), r.get("t_mb")
 
 
-def mel_to_hz(m):
-    return 700.0 * (10 ** (m / 2595.0) - 1.0)
+def channel_onset(x1, fs, t0, kind, search_s=0.0015):
+    """Onset (s) of one channel near t0: first sample above 30 % of the local peak of the
+    band-passed signal (N-wave 1-8 kHz, blast 150-2000 Hz) within t0 +- search_s."""
+    band = (1000.0, 8000.0) if kind == "nwave" else (150.0, 2000.0)
+    y = np.abs(bandpass(x1, fs, *band))
+    i0, i1 = max(0, int((t0 - search_s) * fs)), min(len(y), int((t0 + search_s) * fs))
+    if i1 - i0 < 3:
+        return t0
+    seg = y[i0:i1]
+    k = int(np.argmax(seg > 0.3 * seg.max()))
+    return (i0 + k) / fs
 
 
-def mel_filterbank(n_fft, fs, n_mels=40, fmin=0.0, fmax=None):
-    """Standard HTK-style triangular mel filterbank (numpy/scipy only, no
-    librosa dependency)."""
-    if fmax is None:
-        fmax = fs / 2
-    mel_pts = np.linspace(hz_to_mel(fmin), hz_to_mel(fmax), n_mels + 2)
-    hz_pts = mel_to_hz(mel_pts)
-    bin_pts = np.floor((n_fft + 1) * hz_pts / fs).astype(int)
-    n_freq = n_fft // 2 + 1
-    fbank = np.zeros((n_mels, n_freq))
-    for m in range(1, n_mels + 1):
-        f_lo, f_mid, f_hi = bin_pts[m - 1], bin_pts[m], bin_pts[m + 1]
-        for k in range(f_lo, min(f_mid, n_freq)):
-            if f_mid > f_lo:
-                fbank[m - 1, k] = (k - f_lo) / (f_mid - f_lo)
-        for k in range(f_mid, min(f_hi, n_freq)):
-            if f_hi > f_mid:
-                fbank[m - 1, k] = (f_hi - k) / (f_hi - f_mid)
-    return fbank
+def cut(x1, fs, t_start, dur):
+    i0 = int(round(t_start * fs)); n = int(round(dur * fs))
+    if i0 < 0 or i0 + n > len(x1) or n < 4:
+        return None
+    return np.asarray(x1[i0:i0 + n], dtype=np.float64).copy()
 
 
-def log_mel_spectrogram(x, fs, n_fft=1024, hop=256, n_mels=40, fmin=0.0, fmax=None, eps=1e-10):
-    f, t, P = _stft_power(x, fs, n_fft, hop)
-    fbank = mel_filterbank(n_fft, fs, n_mels=n_mels, fmin=fmin, fmax=fmax)
-    return np.log10(fbank @ P + eps), t
+# ===========================================================================
+# Pulse parameters measured from the signal
+# ===========================================================================
+def polarity(w):
+    """+1 if the first major excursion is positive, else -1."""
+    a = np.abs(w)
+    if a.max() <= 0:
+        return 1
+    k = int(np.argmax(a > 0.5 * a.max()))
+    return 1 if w[k] >= 0 else -1
 
 
-def log_spectral_distance(x1, x2, fs, n_fft=1024, hop=256, eps=1e-10):
-    """Log-Spectral Distance (LSD), in dB. Standard defn: frame-wise RMS of
-    the log-power spectral difference, averaged over frames. Lower = more
-    similar. Signals should be time-aligned and at the same sample rate
-    first (see align_signals / match_sample_rates)."""
-    _, _, P1 = _stft_power(x1, fs, n_fft, hop)
-    _, _, P2 = _stft_power(x2, fs, n_fft, hop)
-    n_frames = min(P1.shape[1], P2.shape[1])
-    log_diff = 10*np.log10(P1[:, :n_frames]+eps) - 10*np.log10(P2[:, :n_frames]+eps)
-    return float(np.mean(np.sqrt(np.mean(log_diff ** 2, axis=0))))
-
-
-def mel_spectrogram_mse(x1, x2, fs, **kwargs):
-    """MSE between log-mel spectrograms."""
-    M1, _ = log_mel_spectrogram(x1, fs, **kwargs)
-    M2, _ = log_mel_spectrogram(x2, fs, **kwargs)
-    n = min(M1.shape[1], M2.shape[1])
-    return float(np.mean((M1[:, :n] - M2[:, :n]) ** 2))
-
-
-def ssim_2d(A, B, win_size=7):
-    """Structural Similarity Index (Wang, Bovik, Sheikh & Simoncelli, 2004),
-    with uniform (box) windows rather than the original Gaussian window --
-    a common simplification, also used by e.g. scikit-image's default."""
-    dyn_range = max(A.max(), B.max()) - min(A.min(), B.min())
-    C1, C2 = (0.01*dyn_range)**2, (0.03*dyn_range)**2
-    mu_A, mu_B = uniform_filter(A, size=win_size), uniform_filter(B, size=win_size)
-    mu_A2, mu_B2, mu_AB = mu_A**2, mu_B**2, mu_A*mu_B
-    sigma_A2 = uniform_filter(A*A, size=win_size) - mu_A2
-    sigma_B2 = uniform_filter(B*B, size=win_size) - mu_B2
-    sigma_AB = uniform_filter(A*B, size=win_size) - mu_AB
-    num = (2*mu_AB + C1) * (2*sigma_AB + C2)
-    den = (mu_A2 + mu_B2 + C1) * (sigma_A2 + sigma_B2 + C2)
-    return float(np.mean(num / den))
-
-
-def mel_spectrogram_ssim(x1, x2, fs, **kwargs):
-    M1, _ = log_mel_spectrogram(x1, fs, **kwargs)
-    M2, _ = log_mel_spectrogram(x2, fs, **kwargs)
-    n = min(M1.shape[1], M2.shape[1])
-    return ssim_2d(M1[:, :n], M2[:, :n])
-
-
-def mfcc(x, fs, n_fft=1024, hop=256, n_mels=40, n_mfcc=13, **kwargs):
-    """Mel-Frequency Cepstral Coefficients (Davis & Mermelstein, 1980):
-    DCT-II of the log-mel spectrogram. Returns (coeffs, frame_times, hop_s)."""
-    logmel, t = log_mel_spectrogram(x, fs, n_fft=n_fft, hop=hop, n_mels=n_mels, **kwargs)
-    coeffs = dct(logmel, type=2, axis=0, norm="ortho")[:n_mfcc]
-    return coeffs, t, hop / fs
-
-
-def cosine_similarity(a, b):
-    na, nb = np.linalg.norm(a), np.linalg.norm(b)
-    if na < 1e-12 or nb < 1e-12:
+def nwave_duration(w, fs):
+    """T_N (s): front shock (steepest rise) to rear shock (steepest rise after the
+    minimum), on the polarity-corrected window."""
+    w = polarity(w) * np.asarray(w)
+    d = np.diff(w)
+    if len(d) < 5:
         return np.nan
-    return float(np.dot(a, b) / (na * nb))
-
-
-def mfcc_cosine_similarity_naive(x1, fs1, x2, fs2, **mfcc_kwargs):
-    """Whole-clip time-averaged MFCC vector, then cosine similarity.
-
-    WARNING: for mostly-silent recordings with one brief event (like a
-    gunshot), this is dominated by the many near-identical, near-zero
-    silent frames, and can read deceptively close to 1.0 even when the
-    actual event sounds nothing alike -- verified directly: two signals
-    with a 2kHz vs. an 8kHz burst embedded in equal silence score 0.9997
-    here despite being clearly different events. Kept in this module
-    specifically to make that failure mode visible/reproducible; use
-    mfcc_cosine_similarity_event() for a metric that actually reflects
-    event similarity."""
-    C1, _, _ = mfcc(x1, fs1, **mfcc_kwargs)
-    C2, _, _ = mfcc(x2, fs2, **mfcc_kwargs)
-    return cosine_similarity(C1.mean(axis=1), C2.mean(axis=1))
-
-
-def mfcc_cosine_similarity_event(x1, fs1, x2, fs2, onset1_s, onset2_s,
-                                  window_s=0.020, **mfcc_kwargs):
-    """MFCC cosine similarity restricted to a window around each signal's
-    own event onset -- excludes the silent majority of the clip, so it
-    actually measures event-timbre similarity rather than being dominated
-    by shared silence. onset1_s/onset2_s: onset time (s) in each signal,
-    e.g. from find_loudest_onset()."""
-    C1, t1, _ = mfcc(x1, fs1, **mfcc_kwargs)
-    C2, t2, _ = mfcc(x2, fs2, **mfcc_kwargs)
-    m1 = (t1 >= onset1_s - window_s/4) & (t1 <= onset1_s + window_s)
-    m2 = (t2 >= onset2_s - window_s/4) & (t2 <= onset2_s + window_s)
-    if not m1.any() or not m2.any():
+    dd = d[: max(5, int(0.6 * len(d)))]
+    i_front = int(np.argmax(dd > 0.5 * dd.max()))          # EARLIEST steep rise (the rear shock is as steep)
+    i_front += int(np.argmax(d[i_front:i_front + 4]))
+    # the minimum must belong to THIS N-wave (small arms: T_N < ~0.8 ms), not to a later
+    # ground reflection or echo, which on real recordings follows ~0.5-3 ms after the SW
+    i_end = min(len(w), i_front + max(4, int(0.0008 * fs)))
+    i_min = i_front + int(np.argmin(w[i_front:i_end]))
+    if i_min >= len(d) - 1:
         return np.nan
-    return cosine_similarity(C1[:, m1].mean(axis=1), C2[:, m2].mean(axis=1))
+    i_rear = i_min + int(np.argmax(d[i_min:i_min + max(3, int(0.00015 * fs))]))
+    return (i_rear - i_front) / fs if i_rear > i_front else np.nan
 
 
-def dtw_distance(seq1, seq2):
-    """Dynamic Time Warping (Sakoe & Chiba, 1978) with Euclidean local cost,
-    on feature-FRAME sequences (e.g. MFCC) -- not raw audio samples, which
-    would be computationally infeasible and isn't how DTW is used in the
-    audio-ML literature. Normalized by warping-path length so it's
-    comparable across signals of different duration. seq1/seq2 shape:
-    (n_features, n_frames)."""
-    A, B = seq1.T, seq2.T
-    n, m = len(A), len(B)
-    dist = np.linalg.norm(A[:, None, :] - B[None, :, :], axis=2)
-    D = np.full((n + 1, m + 1), np.inf)
-    D[0, 0] = 0.0
-    for i in range(1, n + 1):
-        row_prev, row = D[i - 1], D[i]
-        for j in range(1, m + 1):
-            row[j] = dist[i-1, j-1] + min(row_prev[j], row[j-1], row_prev[j-1])
-    i, j, path_len = n, m, 0
-    while i > 0 and j > 0:
-        path_len += 1
-        choices = (D[i-1, j-1], D[i-1, j], D[i, j-1])
-        move = int(np.argmin(choices))
-        i, j = (i-1, j-1) if move == 0 else (i-1, j) if move == 1 else (i, j-1)
-    path_len += i + j
-    return float(D[n, m] / max(path_len, 1))
+def blast_duration(w, fs):
+    """Positive-phase duration T_mb (s): onset (10 % of the peak, before it) to the first
+    zero crossing after the peak, on the polarity-corrected window (Friedlander T)."""
+    w = polarity(w) * np.asarray(w)
+    ip = int(np.argmax(w))
+    if w[ip] <= 0:
+        return np.nan
+    pre = np.where(w[:ip + 1] < 0.1 * w[ip])[0]
+    i0 = int(pre[-1]) + 1 if len(pre) else 0
+    zc = np.where(w[ip:] <= 0)[0]
+    return (ip + int(zc[0]) - i0) / fs if len(zc) else np.nan
 
 
-def compare_signals_ml(x1, fs1, x2, fs2, label1="Signal 1", label2="Signal 2",
-                        max_lag_s=0.05, mfcc_window_s=0.020, verbose=True):
-    """Run the audio-ML/TTS-style similarity suite: RMSE(time), cross-
-    correlation, LSD, Mel-Spec MSE, Mel-Spec SSIM, MFCC cosine similarity
-    (both naive and event-windowed), DTW distance."""
-    x1r, x2r, fs_c = match_sample_rates(x1, fs1, x2, fs2)
-    a_al, b_al, lag_s = align_signals(x1r, x2r, fs_c, max_lag_s=max_lag_s)
+# ===========================================================================
+# 4.3.1 waveform morphology
+# ===========================================================================
+def best_lag(x, y, fs, max_lag_s):
+    """(lag_s, signed peak correlation): lag > 0 means y arrives after x."""
+    n = min(len(x), len(y))
+    a, b = x[:n] - x[:n].mean(), y[:n] - y[:n].mean()
+    c = correlate(a, b, mode="full")
+    lags = np.arange(-n + 1, n)
+    keep = np.abs(lags) <= int(round(max_lag_s * fs))
+    c, lags = c[keep], lags[keep]
+    k = int(np.argmax(np.abs(c)))
+    return float(-lags[k] / fs), float(np.sign(c[k]))
 
-    report = {}
-    report["rmse_time_aligned"] = rmse_time(a_al, b_al)
-    report["cross_correlation"] = pearson_correlation_coefficient(a_al, b_al)
-    report["lsd_db"] = log_spectral_distance(a_al, b_al, fs_c)
-    report["mel_spec_mse"] = mel_spectrogram_mse(a_al, b_al, fs_c)
-    report["mel_spec_ssim"] = mel_spectrogram_ssim(a_al, b_al, fs_c)
 
-    onset1_idx, _ = find_loudest_onset(x1, fs1)
-    onset2_idx, _ = find_loudest_onset(x2, fs2)
-    onset1_s = onset1_idx / fs1 if onset1_idx is not None else 0.0
-    onset2_s = onset2_idx / fs2 if onset2_idx is not None else 0.0
-    report["mfcc_cosine_naive"] = mfcc_cosine_similarity_naive(x1, fs1, x2, fs2)
-    report["mfcc_cosine_event"] = mfcc_cosine_similarity_event(
-        x1, fs1, x2, fs2, onset1_s, onset2_s, window_s=mfcc_window_s)
+def align(x, y, fs, lag_s):
+    k = int(round(lag_s * fs))
+    a, b = (x[:len(x) - k], y[k:]) if k > 0 else ((x[-k:], y[:len(y) + k]) if k < 0 else (x, y))
+    n = min(len(a), len(b))
+    return np.asarray(a[:n]), np.asarray(b[:n])
 
-    C1, _, _ = mfcc(a_al, fs_c)
-    C2, _, _ = mfcc(b_al, fs_c)
-    report["dtw_distance"] = dtw_distance(C1, C2)
 
+def pearson_r(x, y):
+    x0, y0 = x - x.mean(), y - y.mean()
+    den = np.sqrt(np.sum(x0 * x0) * np.sum(y0 * y0))
+    return float(np.sum(x0 * y0) / den) if den > 1e-30 else np.nan
+
+
+def snr_synth_db(x, y):
+    num, den = np.sum(x * x), np.sum((x - y) ** 2)
+    return float(10 * np.log10(num / den)) if num > 1e-30 and den > 1e-30 else np.nan
+
+
+def pct_err(meas, synth):
+    return float(abs(synth - meas) / abs(meas) * 100) if np.isfinite(meas) and meas != 0 and np.isfinite(synth) else np.nan
+
+
+# ===========================================================================
+# 4.3.2 frequency domain
+# ===========================================================================
+def event_psd(w, fs, nfft=4096, tukey_alpha=0.25):
+    w = (w - w.mean()) * tukey(len(w), alpha=tukey_alpha)
+    return welch(w, fs=fs, window="boxcar", nperseg=len(w), noverlap=0,
+                 nfft=max(int(nfft), len(w)), detrend=False, scaling="density")
+
+
+def mean_psd(windows, fs, nfft, tukey_alpha):
+    sp = [event_psd(w, fs, nfft, tukey_alpha) for w in windows]
+    return sp[0][0], np.mean([s[1] for s in sp], axis=0)
+
+
+def lsd_db(f, Pm, Ps, band):
+    k = (f >= band[0]) & (f <= band[1]) & (Pm > 0) & (Ps > 0)
+    if k.sum() < 3:
+        return np.nan
+    d = 10 * np.log10(Ps[k] / Pm[k])
+    return float(np.sqrt(_trapz(d * d, f[k]) / (f[k][-1] - f[k][0])))
+
+
+def smooth_log(P, window=11):
+    w = min(window | 1, len(P) - (1 - len(P) % 2))
+    return 10 ** savgol_filter(np.log10(np.maximum(P, 1e-30)), w, 2) if w >= 5 else P
+
+
+def peak_freq(f, P, band, window=11):
+    k = (f >= band[0]) & (f <= band[1])
+    return float(f[k][np.argmax(smooth_log(P[k], window))]) if k.sum() >= 3 else np.nan
+
+
+def null_freq(f, P, T_N, band, window=11):
+    """First non-trivial N-wave null: minimum of the smoothed spectrum within 0.6-1.6 x
+    the expected 1.43 / T_N (T_N measured from the same signal)."""
+    if not np.isfinite(T_N) or T_N <= 0:
+        return np.nan
+    fe = 1.43 / T_N
+    k = (f >= max(band[0], 0.6 * fe)) & (f <= min(band[1], 1.6 * fe))
+    if k.sum() < 3:
+        return np.nan
+    return float(f[k][np.argmin(smooth_log(P[k], window))])
+
+
+def pooled_coherence(pairs, fs, nperseg, nfft):
+    """Ensemble MSC |sum Sxy|^2 / (sum Sxx sum Syy) over all segments of all pairs (paper
+    eq. of 4.3.2). Returns (f, C, K)."""
+    sxy = sx = sy = None
+    K = 0
+    win = tukey(nperseg, alpha=0.25)
+    for x, y in pairs:
+        n = min(len(x), len(y))
+        for i in range(0, n - nperseg + 1, max(1, nperseg // 2)):
+            a = (x[i:i + nperseg] - x[i:i + nperseg].mean()) * win
+            b = (y[i:i + nperseg] - y[i:i + nperseg].mean()) * win
+            X, Y = np.fft.rfft(a, nfft), np.fft.rfft(b, nfft)
+            if sxy is None:
+                sxy = np.zeros(len(X), complex); sx = np.zeros(len(X)); sy = np.zeros(len(X))
+            sxy += X * np.conj(Y); sx += np.abs(X) ** 2; sy += np.abs(Y) ** 2
+            K += 1
+    if K == 0:
+        return None, None, 0
+    f = np.fft.rfftfreq(nfft, 1 / fs)
+    C = np.where(sx * sy > 1e-30, np.abs(sxy) ** 2 / np.maximum(sx * sy, 1e-30), 0.0)
+    return f, np.clip(C, 0, 1), K
+
+
+def coherence_bandwidth(f, C, band, thr=0.8):
+    k = (f >= band[0]) & (f <= band[1])
+    ff, cc = f[k], C[k]
+    return float(np.sum(np.diff(ff)[(cc[:-1] > thr) & (cc[1:] > thr)])) if len(ff) > 1 else np.nan
+
+
+# ===========================================================================
+# 4.3.3 TDOA
+# ===========================================================================
+def tdoa(a, b, fs, max_lag_s, method="xcorr", up=16):
+    """t_a - t_b (s) by plain cross-correlation or GCC-PHAT, sinc-upsampled peak."""
+    n = 1 << int(np.ceil(np.log2(2 * len(a))))
+    A, B = np.fft.rfft(a - a.mean(), n), np.fft.rfft(b - b.mean(), n)
+    G = A * np.conj(B)
+    if method == "gcc":
+        G = G / np.maximum(np.abs(G), 1e-20)
+    cc = np.fft.irfft(G, n * up)                       # sinc interpolation by zero padding
+    m = int(round(max_lag_s * fs * up))
+    cc = np.concatenate([cc[-m:], cc[:m + 1]])
+    return (int(np.argmax(cc)) - m) / (fs * up)
+
+
+def tdoa_table(windows, fs, max_lag_s, method):
+    out = {}
+    for i in range(len(windows)):
+        for j in range(i + 1, len(windows)):
+            out[f"{i},{j}"] = tdoa(windows[i], windows[j], fs, max_lag_s, method)
+    return out
+
+
+def tdoa_errors(t_synth, t_ref):
+    keys = [k for k in t_synth if k in t_ref]
+    e = np.array([t_synth[k] - t_ref[k] for k in keys])
+    ind = np.array([t_synth[k] - t_ref[k] for k in keys if k.startswith("0,")])
+    stat = lambda v: dict(mae_us=float(np.mean(np.abs(v)) * 1e6), rmse_us=float(np.sqrt(np.mean(v ** 2)) * 1e6),
+                          bias_us=float(np.mean(v) * 1e6), n=int(len(v))) if len(v) else None
+    return dict(all_pairs=stat(e), independent_ref0=stat(ind), per_pair_us={k: float(v * 1e6) for k, v in zip(keys, e)})
+
+
+# ===========================================================================
+# Generator ground truth (gs_gen_* JSON)
+# ===========================================================================
+def read_generator_json(path):
+    """Event times inside the synthetic WAV and model TDOA labels from the generator's
+    JSON (<name>.json of gs_gen_apply_adc.py / <name>_clean.json). Returns
+    (times dict, reference TDOAs dict) -- times in s from the start of the WAV."""
+    with open(path, encoding="utf-8") as f:
+        d = json.load(f)
+    g = d.get("clean_signal_ground_truth", d)
+    t0 = g.get("t_master_start_s", 0.0)
+    per = g.get("per_mic", [])
+    sw = [m["shockwave"]["t_arrive_s"] - t0 if m.get("shockwave", {}).get("generated") else None for m in per]
+    mb = [m["muzzle_blast"]["t_arrive_s"] - t0 if m.get("muzzle_blast", {}).get("generated") else None for m in per]
+    times = {}
+    if per and all(v is not None for v in sw):
+        times.update(synth_sw=min(sw), synth_sw_ch=sw)
+    if per and all(v is not None for v in mb):
+        times.update(synth_mb=min(mb), synth_mb_ch=mb)
+    ref = {}
+    for kind, key in (("nwave", "tdoa_matrix_sw_us"), ("blast", "tdoa_matrix_mb_us")):
+        Mx = g.get(key)
+        if Mx:
+            ref[kind] = {f"{i},{j}": Mx[i][j] * 1e-6 for i in range(len(Mx)) for j in range(i + 1, len(Mx))}
+    return times, ref
+
+
+# ===========================================================================
+# Evaluation
+# ===========================================================================
+DEFAULTS = dict(nwave_window_ms=1.5, nwave_pre_ms=0.25, blast_window_ms=20.0, blast_pre_ms=2.0,
+                nwave_band=None, blast_band=(50.0, 4000.0), nfft=4096, tukey_alpha=0.25,
+                max_lag_ms=1.0, min_segments=8, coherence_threshold=0.8, smooth_window=11,
+                tdoa_method="xcorr", tdoa_max_lag_ms=1.2, highpass=True)
+
+
+def _events_for(x, fs, given_sw, given_mb):
+    t_sw, t_mb = detect_events(x, fs) if (given_sw is None or given_mb is None) else (None, None)
+    return (given_sw if given_sw is not None else t_sw), (given_mb if given_mb is not None else t_mb)
+
+
+def evaluate(pairs, event="both", times=None, ref_tdoa=None, opts=None, verbose=True):
+    """pairs: list of (x_meas[n, ch], fs_meas, x_synth[n, ch], fs_synth); times: optional list of
+    dicts {meas_sw, meas_mb, synth_sw, synth_mb} in s. Returns (per_pair list, summary dict)."""
+    o = dict(DEFAULTS, **(opts or {}))
+    kinds = ["nwave", "blast"] if event == "both" else [event]
+    pool = {k: dict(meas=[], synth=[], coh=[], T_meas=[], T_synth=[], rows=[], tdoa=[], fs=None) for k in kinds}
+    delay_err = []
+    per_pair = []
+
+    for ip, (xm, fm, xs, fsn) in enumerate(pairs):
+        fs = max(fm, fsn)
+        xm, xs = to_rate(xm, fm, fs), to_rate(xs, fsn, fs)
+        nch = min(xm.shape[1], xs.shape[1])
+        xm, xs = xm[:, :nch], xs[:, :nch]
+        t = (times[ip] if times else {}) or {}
+        m_sw, m_mb = _events_for(xm, fs, t.get("meas_sw"), t.get("meas_mb"))
+        s_sw, s_mb = _events_for(xs, fs, t.get("synth_sw"), t.get("synth_mb"))
+        rec = dict(pair=ip, fs=fs, channels=nch, meas_sw_s=m_sw, meas_mb_s=m_mb, synth_sw_s=s_sw, synth_mb_s=s_mb)
+        onsets = {}
+        for kind in kinds:
+            tm, ts = (m_sw, s_sw) if kind == "nwave" else (m_mb, s_mb)
+            if tm is None or ts is None:
+                rec[kind] = "not found in " + ("both" if tm is None and ts is None else ("measured" if tm is None else "synthetic"))
+                continue
+            L = o[f"{kind}_window_ms"] / 1e3; pre = o[f"{kind}_pre_ms"] / 1e3
+            P = pool[kind]; P["fs"] = fs
+            band = tuple(o["nwave_band"] or (200.0, min(20000.0, 0.45 * fs))) if kind == "nwave" else tuple(o["blast_band"])
+            P["band"] = band
+            wins_m, wins_s, rows = [], [], []
+            if o["highpass"]:      # remove what the generator does not model (wind, recoil, drift)
+                sos = butter(2, band[0], btype="high", fs=fs, output="sos")
+                xmk, xsk = sosfiltfilt(sos, xm, axis=0), sosfiltfilt(sos, xs, axis=0)
+            else:
+                xmk, xsk = xm, xs
+            for c in range(nch):
+                om = channel_onset(xm[:, c], fs, tm, kind)
+                given = t.get(f"synth_{'sw' if kind == 'nwave' else 'mb'}_ch")
+                os_ = given[c] if given is not None and c < len(given) else channel_onset(xs[:, c], fs, ts, kind)
+                onsets[(kind, c)] = (om, os_)
+                wm, ws = cut(xmk[:, c], fs, om - pre, L), cut(xsk[:, c], fs, os_ - pre, L)
+                if wm is None or ws is None:
+                    continue
+                wins_m.append(cut(xmk[:, c], fs, tm - pre - 0.0012, L + 0.0024))   # common window for TDOA
+                wins_s.append(cut(xsk[:, c], fs, ts - pre - 0.0012, L + 0.0024))
+                lag, sgn = best_lag(wm, ws, fs, o["max_lag_ms"] / 1e3)
+                am, as_ = align(wm, ws, fs, lag)
+                Tm = nwave_duration(wm, fs) if kind == "nwave" else blast_duration(wm, fs)
+                Ts = nwave_duration(ws, fs) if kind == "nwave" else blast_duration(ws, fs)
+                row = dict(channel=c + 1, lag_ms=lag * 1e3, pearson_r=pearson_r(am, as_), snr_synth_db=snr_synth_db(am, as_),
+                           peak_meas=float(np.max(np.abs(am))), peak_synth=float(np.max(np.abs(as_))),
+                           T_meas_ms=Tm * 1e3, T_synth_ms=Ts * 1e3,
+                           polarity_meas=polarity(wm), polarity_synth=polarity(ws))
+                row["peak_error_pct"] = pct_err(row["peak_meas"], row["peak_synth"])
+                row["T_error_pct"] = pct_err(Tm, Ts)
+                row["polarity_mismatch"] = row["polarity_meas"] != row["polarity_synth"] or sgn < 0
+                rows.append(row)
+                P["meas"].append(am); P["synth"].append(as_); P["coh"].append((am, as_))
+                P["T_meas"].append(Tm); P["T_synth"].append(Ts)
+            rec[kind] = rows
+            P["rows"] += rows
+            if len(wins_m) >= 2 and all(w is not None for w in wins_m + wins_s):
+                lagmax = o["tdoa_max_lag_ms"] / 1e3
+                t_m = tdoa_table(wins_m, fs, lagmax, o["tdoa_method"])
+                t_s = tdoa_table(wins_s, fs, lagmax, o["tdoa_method"])
+                t_lab = (t.get("ref_tdoa") or ref_tdoa or {}).get(kind)
+                if t_lab:     # paper 4.3.3: measured TDOAs against the model labels
+                    rec[f"{kind}_tdoa"] = dict(measured_s=t_m, synthetic_s=t_s, model_label_s=t_lab,
+                                               errors_measured_vs_model=tdoa_errors(t_m, t_lab),
+                                               errors_synthetic_vs_model=tdoa_errors(t_s, t_lab))
+                    P["tdoa"].append((t_m, t_lab))
+                else:         # no labels: synthetic TDOAs against the measured ones
+                    rec[f"{kind}_tdoa"] = dict(measured_s=t_m, synthetic_s=t_s, errors=tdoa_errors(t_s, t_m))
+                    P["tdoa"].append((t_s, t_m))
+        if "nwave" in kinds and "blast" in kinds:
+            for c in range(nch):
+                if ("nwave", c) in onsets and ("blast", c) in onsets:
+                    dm = onsets[("blast", c)][0] - onsets[("nwave", c)][0]
+                    ds = onsets[("blast", c)][1] - onsets[("nwave", c)][1]
+                    delay_err.append(ds - dm)
+        per_pair.append(rec)
+
+    summary = {}
+    for kind in kinds:
+        P = pool[kind]
+        if not P["rows"]:
+            summary[kind] = "no events"
+            continue
+        fs, band = P["fs"], P["band"]
+        mean = lambda key: float(np.nanmean([r[key] for r in P["rows"]]))
+        s = dict(n_windows=len(P["rows"]), band_hz=list(band),
+                 pearson_r=mean("pearson_r"), snr_synth_db=mean("snr_synth_db"),
+                 peak_error_pct=mean("peak_error_pct"), T_meas_ms=mean("T_meas_ms"), T_synth_ms=mean("T_synth_ms"),
+                 T_error_pct=mean("T_error_pct"),
+                 polarity_mismatches=int(sum(r["polarity_mismatch"] for r in P["rows"])))
+        f, Pm = mean_psd(P["meas"], fs, o["nfft"], o["tukey_alpha"])
+        _, Ps = mean_psd(P["synth"], fs, o["nfft"], o["tukey_alpha"])
+        s["lsd_db"] = lsd_db(f, Pm, Ps, band)
+        if kind == "blast":
+            s["f_pk_meas_hz"], s["f_pk_synth_hz"] = peak_freq(f, Pm, band, o["smooth_window"]), peak_freq(f, Ps, band, o["smooth_window"])
+            s["f_pk_error_pct"] = pct_err(s["f_pk_meas_hz"], s["f_pk_synth_hz"])
+            s["f_pk_expected_from_T_hz"] = dict(meas=1 / (2 * np.pi * s["T_meas_ms"] / 1e3), synth=1 / (2 * np.pi * s["T_synth_ms"] / 1e3))
+        else:
+            Tm, Ts = np.nanmedian(P["T_meas"]), np.nanmedian(P["T_synth"])
+            s["f_null_meas_hz"], s["f_null_synth_hz"] = null_freq(f, Pm, Tm, band, o["smooth_window"]), null_freq(f, Ps, Ts, band, o["smooth_window"])
+            s["f_null_error_pct"] = pct_err(s["f_null_meas_hz"], s["f_null_synth_hz"])
+            s["f_null_expected_hz"] = dict(meas=1.43 / Tm if Tm > 0 else np.nan, synth=1.43 / Ts if Ts > 0 else np.nan)
+        L = min(len(w) for w in P["meas"])
+        nseg = max(16, min(256, L // 4))
+        fc, C, K = pooled_coherence(P["coh"], fs, nseg, o["nfft"])
+        s["coherence_segments_K"], s["coherence_segment_len"] = K, nseg
+        if K >= o["min_segments"]:
+            k = (fc >= band[0]) & (fc <= band[1])
+            s["coherence_mean"] = float(np.mean(C[k]))
+            s["coherence_bw_above_%.1f_hz" % o["coherence_threshold"]] = coherence_bandwidth(fc, C, band, o["coherence_threshold"])
+        else:
+            s["coherence_mean"] = None
+            s["coherence_note"] = f"only {K} segments (< {o['min_segments']}): coherence would be biased towards 1; pool more channels/recordings"
+        if P["tdoa"]:
+            e = [v for t_s, t_r in P["tdoa"] for v in [t_s[k] - t_r[k] for k in t_s if k in t_r]]
+            ei = [v for t_s, t_r in P["tdoa"] for v in [t_s[k] - t_r[k] for k in t_s if k in t_r and k.startswith("0,")]]
+            e, ei = np.array(e), np.array(ei)
+            s["tdoa"] = dict(method=o["tdoa_method"],
+                             compared="measured vs model labels" if (ref_tdoa or any((tt or {}).get("ref_tdoa") for tt in (times or []))) else "synthetic vs measured",
+                             mae_us=float(np.mean(np.abs(e)) * 1e6), rmse_us=float(np.sqrt(np.mean(e ** 2)) * 1e6),
+                             bias_us=float(np.mean(e) * 1e6), n_pairs=int(len(e)),
+                             independent_mae_us=float(np.mean(np.abs(ei)) * 1e6) if len(ei) else None)
+        summary[kind] = s
+    if delay_err:
+        d = np.array(delay_err)
+        summary["sw_to_mb_delay"] = dict(mae_us=float(np.mean(np.abs(d)) * 1e6), bias_us=float(np.mean(d) * 1e6), n=int(len(d)))
     if verbose:
-        w = 26
-        print(f"\n{'--- Audio-ML / TTS-style suite ---':<{w}} {label1:>16} {label2:>16}")
-        print(f"(aligned at lag {lag_s*1e3:+.3f} ms before computing)")
-        print(f"{'RMSE (time, aligned)':<{w}} {'':>16} {report['rmse_time_aligned']:>16.4f}  (lower=better)")
-        print(f"{'Cross-Correlation':<{w}} {'':>16} {report['cross_correlation']:>16.4f}  (closer to 1=better)")
-        print(f"{'Log-Spectral Dist (dB)':<{w}} {'':>16} {report['lsd_db']:>16.4f}  (lower=better)")
-        print(f"{'Mel-Spec MSE':<{w}} {'':>16} {report['mel_spec_mse']:>16.4f}  (lower=better)")
-        print(f"{'Mel-Spec SSIM':<{w}} {'':>16} {report['mel_spec_ssim']:>16.4f}  (closer to 1=better)")
-        print(f"{'MFCC Cosine Sim (naive)':<{w}} {'':>16} {report['mfcc_cosine_naive']:>16.4f}  "
-              f"(WARNING: see docstring -- often misleadingly high)")
-        print(f"{'MFCC Cosine Sim (event)':<{w}} {'':>16} {report['mfcc_cosine_event']:>16.4f}  "
-              f"(closer to 1=better, more trustworthy)")
-        print(f"{'DTW Distance':<{w}} {'':>16} {report['dtw_distance']:>16.4f}  (lower=better)")
-
-    return report
+        print_summary(summary)
+    return per_pair, summary
 
 
-# ---------------------------------------------------------------------------
-# Top-level report
-# ---------------------------------------------------------------------------
-def compare_signals(x1, fs1, x2, fs2, label1="Signal 1", label2="Signal 2",
-                     max_lag_s=0.05, verbose=True):
-    """Run the full comparison and return a dict of metrics. Prints a table
-    if verbose=True."""
-    report = {}
-
-    s1, s2 = amplitude_stats(x1, fs1), amplitude_stats(x2, fs2)
-    report["snr_db_1"], report["snr_db_2"] = s1["snr_db"], s2["snr_db"]
-
-    f1, P1 = psd_welch(x1, fs1)
-    f2, P2 = psd_welch(x2, fs2)
-    report["psd_slope_1"] = psd_slope_fit(f1, P1)
-    report["psd_slope_2"] = psd_slope_fit(f2, P2)
-    report["psd_shape_corr"] = psd_shape_correlation(f1, P1, f2, P2)
-
-    report["rt60_1"] = estimate_rt60_schroeder(x1, fs1)
-    report["rt60_2"] = estimate_rt60_schroeder(x2, fs2)
-
-    onset1, _ = find_loudest_onset(x1, fs1)
-    onset2, _ = find_loudest_onset(x2, fs2)
-    shp1 = event_shape_params(x1, fs1, onset1)
-    shp2 = event_shape_params(x2, fs2, onset2)
-    report["onset_half_period_ms_1"] = shp1["half_period_ms"]
-    report["onset_half_period_ms_2"] = shp2["half_period_ms"]
-
-    # Metrics requiring a shared sample rate
-    x1r, x2r, fs_common = match_sample_rates(x1, fs1, x2, fs2)
-
-    n_common = min(len(x1r), len(x2r))
-    report["pearson_r_zero_lag"] = pearson_correlation_coefficient(x1r[:n_common], x2r[:n_common])
-
-    xc, lag_s = cross_correlation_coefficient(x1r, x2r, fs_common, max_lag_s=max_lag_s)
-    report["cross_corr_coeff_best_lag"] = xc
-    report["best_lag_s"] = lag_s
-    report["coherence_band_avg"] = band_averaged_coherence(x1r, x2r, fs_common)
-
-    if verbose:
-        w = 26
-        print(f"{'Metric':<{w}} {label1:>16} {label2:>16}")
-        print("-" * (w + 34))
-        print(f"{'Peak/noise SNR (dB)':<{w}} {s1['snr_db']:>16.2f} {s2['snr_db']:>16.2f}")
-        print(f"{'PSD slope (dB/decade)':<{w}} {report['psd_slope_1']:>16.2f} {report['psd_slope_2']:>16.2f}")
-        print(f"{'RT60, Schroeder (s)':<{w}} {report['rt60_1']:>16.3f} {report['rt60_2']:>16.3f}")
-        print(f"{'Onset half-period (ms)':<{w}} {shp1['half_period_ms']:>16.3f} {shp2['half_period_ms']:>16.3f}")
-        print("-" * (w + 34))
-        print(f"{'*Pearson r (zero lag)*':<{w}} {report['pearson_r_zero_lag']:>16.3f}  "
-              f"<- THE standard academic similarity parameter")
-        print(f"{'Cross-corr. coeff (best lag)':<{w}} {xc:>16.3f}  (at lag {lag_s*1e3:+.3f} ms)")
-        print(f"{'PSD shape correlation':<{w}} {report['psd_shape_corr']:>16.3f}  (1.0 = identical spectral shape)")
-        print(f"{'Band-avg. coherence':<{w}} {report['coherence_band_avg']:>16.3f}  (1.0 = perfectly coherent)")
-
-    return report
+# ===========================================================================
+# Output
+# ===========================================================================
+def _fmt(v):
+    if v is None:
+        return "-"
+    if isinstance(v, float):
+        return f"{v:.4g}" if np.isfinite(v) else "nan"
+    if isinstance(v, (list, tuple)):
+        return "-".join(_fmt(a) for a in v)
+    return str(v)
 
 
-# ---------------------------------------------------------------------------
-# Optional plotting
-# ---------------------------------------------------------------------------
-def plot_comparison(x1, fs1, x2, fs2, label1, label2, out_dir):
-    import os
+def print_summary(summary):
+    for kind in ("nwave", "blast"):
+        s = summary.get(kind)
+        if s is None:
+            continue
+        title = "N-wave (shockwave)" if kind == "nwave" else "Muzzle blast"
+        print(f"\n=== {title} ===")
+        if isinstance(s, str):
+            print("  " + s); continue
+        print("  4.3.1  windows {n_windows} | Pearson r {r} | SNR_synth {snr} dB | peak error {pe} % | "
+              "T meas/synth {tm}/{ts} ms (error {te} %) | polarity mismatches {pm}".format(
+                  n_windows=s["n_windows"], r=_fmt(s["pearson_r"]), snr=_fmt(s["snr_synth_db"]), pe=_fmt(s["peak_error_pct"]),
+                  tm=_fmt(s["T_meas_ms"]), ts=_fmt(s["T_synth_ms"]), te=_fmt(s["T_error_pct"]), pm=s["polarity_mismatches"]))
+        line = f"  4.3.2  band {_fmt(s['band_hz'])} Hz | LSD {_fmt(s['lsd_db'])} dB"
+        if kind == "blast":
+            line += f" | f_pk meas/synth {_fmt(s['f_pk_meas_hz'])}/{_fmt(s['f_pk_synth_hz'])} Hz (error {_fmt(s['f_pk_error_pct'])} %)"
+        else:
+            line += f" | f_null meas/synth {_fmt(s['f_null_meas_hz'])}/{_fmt(s['f_null_synth_hz'])} Hz (error {_fmt(s['f_null_error_pct'])} %)"
+        print(line)
+        if s.get("coherence_mean") is None:
+            print(f"         coherence: {s.get('coherence_note')}")
+        else:
+            bw = [v for k, v in s.items() if k.startswith("coherence_bw")][0]
+            print(f"         coherence: K {s['coherence_segments_K']} segments, mean {_fmt(s['coherence_mean'])}, bandwidth > 0.8: {_fmt(bw)} Hz")
+        if "tdoa" in s:
+            t = s["tdoa"]
+            print(f"  4.3.3  TDOA ({t['method']}, {t['compared']}) | MAE {_fmt(t['mae_us'])} us | RMSE {_fmt(t['rmse_us'])} us | "
+                  f"Bias {_fmt(t['bias_us'])} us | pairs {t['n_pairs']} | independent (ref ch 1) MAE {_fmt(t['independent_mae_us'])} us")
+    if "sw_to_mb_delay" in summary:
+        d = summary["sw_to_mb_delay"]
+        print(f"\n=== 4.3.4 shock-to-blast delay === MAE {_fmt(d['mae_us'])} us | Bias {_fmt(d['bias_us'])} us | channels {d['n']}")
+
+
+def _clean(o):
+    if isinstance(o, dict):
+        return {str(k): _clean(v) for k, v in o.items()}
+    if isinstance(o, (list, tuple)):
+        return [_clean(v) for v in o]
+    if isinstance(o, (np.floating, float)):
+        return float(o) if np.isfinite(o) else None
+    if isinstance(o, (np.integer,)):
+        return int(o)
+    if isinstance(o, np.bool_):
+        return bool(o)
+    return o
+
+
+def plot_pairs(per_pair, pairs, summary, out_dir, opts):
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
-
     os.makedirs(out_dir, exist_ok=True)
+    o = dict(DEFAULTS, **(opts or {}))
+    for rec, (xm, fm, xs, fsn) in zip(per_pair, pairs):
+        fs = rec["fs"]; xm0, xs0 = to_rate(xm, fm, fs), to_rate(xs, fsn, fs)
+        fig, axs = plt.subplots(2, 2, figsize=(14, 7))
+        for col, kind in enumerate(("nwave", "blast")):
+            tm, ts = (rec["meas_sw_s"], rec["synth_sw_s"]) if kind == "nwave" else (rec["meas_mb_s"], rec["synth_mb_s"])
+            if tm is None or ts is None:
+                axs[0, col].set_title(f"{kind}: not found"); continue
+            sk = summary.get(kind) if isinstance(summary.get(kind), dict) else {}
+            lo = (sk.get("band_hz") or [50.0])[0]
+            if o["highpass"]:
+                sos = butter(2, lo, btype="high", fs=fs, output="sos")
+                xm, xs = sosfiltfilt(sos, xm0, axis=0), sosfiltfilt(sos, xs0, axis=0)
+            else:
+                xm, xs = xm0, xs0
+            L, pre = o[f"{kind}_window_ms"] / 1e3, o[f"{kind}_pre_ms"] / 1e3
+            wm, ws = cut(xm[:, 0], fs, channel_onset(xm[:, 0], fs, tm, kind) - pre, L), cut(xs[:, 0], fs, channel_onset(xs[:, 0], fs, ts, kind) - pre, L)
+            if wm is None or ws is None:
+                continue
+            lag, _ = best_lag(wm, ws, fs, o["max_lag_ms"] / 1e3); am, as_ = align(wm, ws, fs, lag)
+            t = np.arange(len(am)) / fs * 1e3
+            axs[0, col].plot(t, am, label="measured"); axs[0, col].plot(t, as_, label="synthetic", alpha=.8)
+            axs[0, col].set_title(f"{kind}, channel 1 (aligned, lag {lag*1e3:+.3f} ms)"); axs[0, col].set_xlabel("ms"); axs[0, col].legend(); axs[0, col].grid(alpha=.3)
+            f, Pm = event_psd(am, fs, o["nfft"]); _, Ps = event_psd(as_, fs, o["nfft"])
+            axs[1, col].semilogx(f[1:], 10 * np.log10(Pm[1:] + 1e-30), label="measured")
+            axs[1, col].semilogx(f[1:], 10 * np.log10(Ps[1:] + 1e-30), label="synthetic")
+            b = (summary.get(kind) or {}).get("band_hz") if isinstance(summary.get(kind), dict) else None
+            if b:
+                axs[1, col].axvspan(b[0], b[1], color="0.9", zorder=0)
+            axs[1, col].set_xlabel("Hz"); axs[1, col].set_ylabel("dB"); axs[1, col].legend(); axs[1, col].grid(alpha=.3, which="both")
+        fig.tight_layout(); p = os.path.join(out_dir, f"similarity_pair{rec['pair']:02d}.png"); fig.savefig(p, dpi=110); plt.close(fig)
+        print(f"Saved {p}")
 
-    fig, axes = plt.subplots(3, 1, figsize=(10, 10))
 
-    t1 = np.arange(len(x1)) / fs1
-    t2 = np.arange(len(x2)) / fs2
-    axes[0].plot(t1, x1, lw=0.5, label=label1, alpha=0.8)
-    axes[0].plot(t2, x2, lw=0.5, label=label2, alpha=0.8)
-    axes[0].set_title("Waveforms (normalized, not time-aligned)")
-    axes[0].set_xlabel("Time (s)"); axes[0].legend(); axes[0].grid(alpha=0.3)
-
-    f1, P1 = psd_welch(x1, fs1)
-    f2, P2 = psd_welch(x2, fs2)
-    axes[1].semilogx(f1, 10*np.log10(P1+1e-20), label=label1)
-    axes[1].semilogx(f2, 10*np.log10(P2+1e-20), label=label2)
-    axes[1].set_title("Power Spectral Density")
-    axes[1].set_xlabel("Frequency (Hz)"); axes[1].set_ylabel("dB")
-    axes[1].legend(); axes[1].grid(alpha=0.3)
-
-    t1e, edc1 = schroeder_edc_db(x1, fs1)
-    t2e, edc2 = schroeder_edc_db(x2, fs2)
-    axes[2].plot(t1e, edc1, label=label1)
-    axes[2].plot(t2e, edc2, label=label2)
-    axes[2].set_title("Schroeder Energy Decay Curve")
-    axes[2].set_xlabel("Time (s)"); axes[2].set_ylabel("dB")
-    axes[2].set_ylim([-80, 5]); axes[2].legend(); axes[2].grid(alpha=0.3)
-
-    plt.tight_layout()
-    out_path = os.path.join(out_dir, "signal_comparison.png")
-    plt.savefig(out_path, dpi=150, bbox_inches="tight")
-    print(f"\nSaved comparison plot: {out_path}")
-
-
-# ---------------------------------------------------------------------------
-# CLI
-# ---------------------------------------------------------------------------
 def main():
-    parser = argparse.ArgumentParser(
-        description="Compare similarity between two acoustic signals (.wav files)."
-    )
-    parser.add_argument("file1", help="Path to first .wav file")
-    parser.add_argument("file2", help="Path to second .wav file")
-    parser.add_argument("--label1", default=None, help="Label for file1 in output")
-    parser.add_argument("--label2", default=None, help="Label for file2 in output")
-    parser.add_argument("--max-lag-ms", type=float, default=50.0,
-                         help="Max lag (ms) to search for best-lag correlation (default: 50)")
-    parser.add_argument("--plot", metavar="OUT_DIR", default=None,
-                         help="If set, save comparison plots to this directory")
-    parser.add_argument("--suite", choices=["classic", "ml", "both"], default="both",
-                         help="Which metric suite to run (default: both)")
-    args = parser.parse_args()
+    ap = argparse.ArgumentParser(description="Measured vs synthesized gunshot similarity (Paper-Generator Section 4.3).")
+    ap.add_argument("measured", nargs="?"); ap.add_argument("synthetic", nargs="?")
+    ap.add_argument("--pair", nargs=2, action="append", metavar=("MEASURED", "SYNTHETIC"), help="repeat to pool recordings")
+    ap.add_argument("--event", choices=["nwave", "blast", "both"], default="both")
+    ap.add_argument("--channels", type=int, nargs="*", help="1-based channels (default: all)")
+    for k in ("meas_sw", "meas_mb", "synth_sw", "synth_mb"):
+        ap.add_argument(f"--{k.replace('_', '-')}-ms", type=float, help="event time by hand (first pair only)")
+    ap.add_argument("--nwave-window-ms", type=float, default=DEFAULTS["nwave_window_ms"])
+    ap.add_argument("--blast-window-ms", type=float, default=DEFAULTS["blast_window_ms"])
+    ap.add_argument("--nwave-band", type=float, nargs=2)
+    ap.add_argument("--blast-band", type=float, nargs=2, default=list(DEFAULTS["blast_band"]))
+    ap.add_argument("--max-lag-ms", type=float, default=DEFAULTS["max_lag_ms"])
+    ap.add_argument("--min-segments", type=int, default=DEFAULTS["min_segments"])
+    ap.add_argument("--tdoa", choices=["xcorr", "gcc"], default=DEFAULTS["tdoa_method"])
+    ap.add_argument("--tdoa-max-lag-ms", type=float, default=DEFAULTS["tdoa_max_lag_ms"])
+    ap.add_argument("--ref-tdoa", help="JSON with reference TDOAs per event (seconds, keys 'i,j' 0-based)")
+    ap.add_argument("--synth-json", action="append", help="generator JSON per pair (repeat in pair order): "
+                    "synthetic event times + model TDOA labels")
+    ap.add_argument("--meas-scale", type=float, default=1.0, help="multiply measured samples (e.g. 1520 = Pa for PILAR-V)")
+    ap.add_argument("--synth-scale", type=float, default=1.0, help="multiply synthetic samples")
+    ap.add_argument("--no-highpass", action="store_true", help="do not high-pass both signals at the band's lower edge")
+    ap.add_argument("--json", help="write per-pair results and the summary to this file")
+    ap.add_argument("--plot", metavar="DIR", help="save overlay/spectrum plots (channel 1) per pair")
+    a = ap.parse_args()
 
-    label1 = args.label1 or args.file1
-    label2 = args.label2 or args.file2
-
-    fs1, x1 = load_wav_normalized(args.file1)
-    fs2, x2 = load_wav_normalized(args.file2)
-
-    print(f"{label1}: fs={fs1} Hz, duration={len(x1)/fs1:.3f} s")
-    print(f"{label2}: fs={fs2} Hz, duration={len(x2)/fs2:.3f} s\n")
-
-    if args.suite in ("classic", "both"):
-        compare_signals(x1, fs1, x2, fs2, label1=label1, label2=label2,
-                         max_lag_s=args.max_lag_ms / 1000.0)
-    if args.suite in ("ml", "both"):
-        compare_signals_ml(x1, fs1, x2, fs2, label1=label1, label2=label2,
-                            max_lag_s=args.max_lag_ms / 1000.0)
-
-    if args.plot:
-        plot_comparison(x1, fs1, x2, fs2, label1, label2, args.plot)
+    files = list(a.pair or [])
+    if a.measured and a.synthetic:
+        files.insert(0, (a.measured, a.synthetic))
+    if not files:
+        ap.error("give measured and synthetic files (or --pair ...)")
+    ch = [c - 1 for c in a.channels] if a.channels else None
+    pairs = []
+    for m, s in files:
+        fm, xm = load_wav(m, ch); fsn, xs = load_wav(s, ch)
+        xm, xs = xm * a.meas_scale, xs * a.synth_scale
+        print(f"{m}: {fm} Hz, {xm.shape[1]} ch, {len(xm)/fm:.3f} s   |   {s}: {fsn} Hz, {xs.shape[1]} ch, {len(xs)/fsn:.3f} s")
+        pairs.append((xm, fm, xs, fsn))
+    times = [dict(meas_sw=a.meas_sw_ms and a.meas_sw_ms / 1e3, meas_mb=a.meas_mb_ms and a.meas_mb_ms / 1e3,
+                  synth_sw=a.synth_sw_ms and a.synth_sw_ms / 1e3, synth_mb=a.synth_mb_ms and a.synth_mb_ms / 1e3)] + [{}] * (len(pairs) - 1)
+    ref = json.load(open(a.ref_tdoa)) if a.ref_tdoa else None
+    for k, gj in enumerate(a.synth_json or []):
+        if k < len(times):
+            tg, rg = read_generator_json(gj)
+            times[k] = {**{kk: vv for kk, vv in times[k].items() if vv is not None}, **tg, "ref_tdoa": rg}
+    opts = dict(nwave_window_ms=a.nwave_window_ms, blast_window_ms=a.blast_window_ms,
+                nwave_band=tuple(a.nwave_band) if a.nwave_band else None, blast_band=tuple(a.blast_band),
+                max_lag_ms=a.max_lag_ms, min_segments=a.min_segments, tdoa_method=a.tdoa, tdoa_max_lag_ms=a.tdoa_max_lag_ms,
+                highpass=not a.no_highpass)
+    per_pair, summary = evaluate(pairs, a.event, times, ref, opts)
+    if a.json:
+        with open(a.json, "w", encoding="utf-8") as f:
+            json.dump(_clean(dict(files=files, options=opts, summary=summary, per_pair=per_pair)), f, indent=2)
+        print(f"\nJSON: {a.json}")
+    if a.plot:
+        plot_pairs(per_pair, pairs, summary, a.plot, opts)
 
 
 if __name__ == "__main__":

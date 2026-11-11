@@ -1,0 +1,67 @@
+{
+  "_notes": "Nominal parameters for gunshot signal generation/detection. Weapon specs from pindad.com; ammunition and acoustic values are typical 7.62x51 NATO ball (M80/MU-2 class) estimates - verify against measured data.",
+  "speed_of_sound_mps": 343.0,
+  "shockwave_model": "Whitham N-wave: T = 1.82*M*b^0.25*d / (c*(M^2-1)^0.375*l^0.25); peak ~ b^-0.75",
+  "weapons": {
+    "SM2-V1": {
+      "role": "GPMG, infantry",
+      "caliber": "7.62x51 mm NATO",
+      "barrel_length_mm": 545,
+      "rifling_twist_mm": 304.8,
+      "rate_of_fire_rpm": [650, 1000],
+      "shot_interval_ms": [60, 92],
+      "bullet": {
+        "mass_g": 9.5,
+        "diameter_mm": 7.82,
+        "length_mm": 28.5,
+        "bc_g1": 0.395,
+        "propellant_g": 2.9
+      },
+      "muzzle_velocity_mps": [830, 850],
+      "mach": 2.45,
+      "mach_cone_angle_deg": 24.1,
+      "spin_rps": 2750,
+      "shockwave": {
+        "duration_us_at_10m": 240,
+        "peak_pa_at_10m": [100, 200]
+      },
+      "muzzle_blast": {
+        "spl_db_at_1m_front": [160, 165],
+        "rear_attenuation_db": [10, 15],
+        "positive_phase_ms": [1.0, 1.5]
+      }
+    },
+    "SM2-V2": {
+      "role": "GPMG, vehicle-mounted",
+      "caliber": "7.62x51 mm NATO",
+      "barrel_length_mm": 587,
+      "rifling_twist_mm": 304.8,
+      "rate_of_fire_rpm": [700, 1200],
+      "shot_interval_ms": [50, 86],
+      "bullet": {
+        "mass_g": 9.5,
+        "diameter_mm": 7.82,
+        "length_mm": 28.5,
+        "bc_g1": 0.395,
+        "propellant_g": 2.9
+      },
+      "muzzle_velocity_mps": [840, 860],
+      "mach": 2.48,
+      "mach_cone_angle_deg": 23.8,
+      "spin_rps": 2780,
+      "shockwave": {
+        "duration_us_at_10m": 240,
+        "peak_pa_at_10m": [100, 200]
+      },
+      "muzzle_blast": {
+        "spl_db_at_1m_front": [160, 164],
+        "rear_attenuation_db": [10, 15],
+        "positive_phase_ms": [1.0, 1.3]
+      },
+      "platform_effects": {
+        "hull_reflection_delay_ms": [1, 5],
+        "vehicle_noise_band_hz": [20, 200]
+      }
+    }
+  }
+}

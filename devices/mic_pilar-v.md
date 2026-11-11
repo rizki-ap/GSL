@@ -2,6 +2,27 @@
 
 <img src="Mic-PilarV.jpeg" alt="Project Screenshot" width="200">
 
+## 0. Array geometry (`mic_config = PILAR-V`)
+
+From the sensor's own configuration header (`device_name: Trackball`, serial 10468, `format_version: 2`). This is the array of the Cipatat recordings (`sound/Cipatat`).
+
+| Channel | x (m) | y (m) | z (m) | Position |
+|---|---:|---:|---:|---|
+| 1 | 0.2055 | 0.000 | 0.000 | Ring, 0° |
+| 2 | −0.1028 | 0.178 | 0.000 | Ring, 120° |
+| 3 | −0.1028 | −0.178 | 0.000 | Ring, 240° |
+| 4 | 0.000 | 0.000 | 0.2412 | Top, on the vertical axis |
+
+- **Shape:** a ring of 3 mics, radius 0.2055 m and 0.356 m apart, plus 1 mic 0.2412 m above the ring centre, 0.317 m from each ring mic. This is a flattened tetrahedron, not a regular one.
+- **Maximum time difference:** about 1.04 ms (0.356 m / c).
+- **Sensitivity:** 8.8 mV/Pa per mic (`sensitivity_V_per_Pa = 0.0088`).
+- **Recording:** 4 ch, 51.2 kHz, 24-bit. Recording channels 0–3 = mic channels 1–4.
+- **Orientation (verified on Cipatat):** x = north (within about 1°), y = west, z = up. Compass azimuth (clockwise from north) is therefore −atan2(y, x) of the direction vector. With this geometry, the Cipatat development shots give direction errors of 2.4° (azimuth) and 2.0° (elevation) RMS.
+- **Other header fields:** `param_float_0x44 = 31.3` is probably the air temperature in °C (unconfirmed). `TREP` and `navigation_records` are not yet interpreted.
+- **Not the same as `Tetrahedral-0,3`:** the earlier simulation geometry, a regular tetrahedron with 0.30 m edge, used to be called `PilarV`.
+
+---
+
 ## 1. Confirmed Mic Hardware (from multimeter reverse-engineering)
 
 **Connector:** Souriau 851-series, 4-pin MIL-DTL-26482

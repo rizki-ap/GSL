@@ -9,20 +9,31 @@ validated Section 9 velocity-estimation approach):
   Method A -- angle only: k_hat_sw . v_hat ~ 1/M, using v_hat ~ -n_hat_shooter
     as a cheap approximation of bullet direction. No amplitude calibration
     needed, but least accurate (biased by miss distance).
-  Method B -- duration + amplitude: solves the Whitham N-wave duration and
-    amplitude equations jointly for M, for EACH caliber in the reference
-    library. Needs this detector's own amplitude calibration (see
-    det_config.ini [calibration]) to convert normalized dP_sw back to Pa.
+  Method B -- duration + amplitude: fits Whitham's N-wave equations
+        dP  = K_P p_atm (M^2-1)^(1/8) d / (L^(1/4) b^(3/4))
+        T_N = K_T M d (b/L)^(1/4) / (c (M^2-1)^(3/8))
+    for M and the miss distance b, for EACH caliber in the reference
+    library (d = diameter, L = length). Needs this detector's own amplitude
+    calibration (det_config.ini [calibration]) to convert normalized dP_sw
+    back to Pa. Eliminating b leaves T_N ~ M (M^2-1)^(-1/3) d^(4/3) /
+    (L^(1/3) dP^(1/3) c): the Mach factor varies only ~+-5 % for M = 1.4-2.6,
+    so T_N and dP fix the miss distance and the CALIBER (via T_N dP^(1/3))
+    well, but the Mach number only weakly -- so Method A's Mach is used (capped
+    at the caliber's muzzle Mach v0/c) and Method B returns the miss distance
+    and a per-caliber duration misfit. Checked on the Cipatat recordings
+    (Nov 2026): Whitham's duration law matched within ~7 % (the previous
+    formula was ~7x too long); with the true Mach, the misfit picked the right
+    size class (5.56 / 7.62-.338 / 12.7) in 7 of 9 shots, but cannot separate
+    calibers of similar d^(4/3)/L^(1/3) (7.62x39, 7.62x51, 7.62x54R, .338).
   Method C -- geometric correction: uses Method B's miss-distance estimate
     and a self-contained PILAR-V range solve to correct the approximate
     bullet direction, rather than assuming v_hat ~ -n_hat_shooter directly.
 
 Caliber classification: Method B is run against EVERY caliber in the
-reference library; the caliber whose fit gives the most physically self-
-consistent (real, supersonic) Mach solution is reported as the best guess.
-This can't be highly confident with only 2 reference calibers that share
-most calibration constants (see det_config.ini) -- treat it as a
-demonstration of the approach, not a rigorously validated classifier.
+reference library (det_config.ini: the six small-arms calibers of the
+Cipatat development set); the caliber with the smallest |T_N misfit| is
+reported as the best guess. It is reliable at the size-class level at best
+-- treat it as a demonstration of the approach, not a validated classifier.
 
 Usage
 -----
@@ -38,7 +49,6 @@ import json
 from datetime import datetime, timezone
 
 import numpy as np
-from scipy.optimize import brentq
 
 from gs_det_signal_prepare import (load_det_config, build_mic_positions,
                                    add_mic_config_argument, upstream_mic_config)
@@ -51,23 +61,57 @@ def method_a_angle_only(k_hat_sw, n_hat_shooter):
     return 1.0 / dot if dot > 0 else None
 
 
-def method_b_duration_amplitude(T_N, dP, c, bl):
-    """Solve Whitham's T_N(M,b) and dP(b) equations jointly for M, for one
-    candidate caliber's L/b0_sw/dP0_sw. Returns (M, b) or None if no valid
-    supersonic root exists for this caliber."""
-    if T_N is None or np.isnan(T_N) or T_N <= 0 or dP is None or dP <= 0:
-        return None
-    b_est = bl["b0_sw"] * (bl["dP0_sw"] / dP) ** 2
+WHITHAM_K_P = 0.53     # peak-overpressure coefficient (same published constant as the generator,
+WHITHAM_K_T = 1.82     # duration coefficient            kept as an independent copy here)
+M_SPLIT = np.sqrt(3.0)  # T_N(M) at fixed dP has its minimum here
+M_MAX_SEARCH = 6.0
 
-    def f_M(M):
-        if M <= 1.0:
-            return -1e10
-        return T_N ** 2 * M ** 2 * c ** 2 * np.sqrt(M ** 2 - 1) - 4.0 * b_est * bl["L"]
 
-    if f_M(1.001) * f_M(10.0) > 0:
+def whitham_b_from_dp(dP, M, bl, p_atm):
+    """Miss distance (m) that gives peak overpressure dP (Pa) at Mach M (Whitham)."""
+    return (WHITHAM_K_P * p_atm * (M * M - 1) ** 0.125 * bl["d"] / (bl["L"] ** 0.25 * dP)) ** (4.0 / 3.0)
+
+
+def whitham_tn(M, b, c, bl):
+    """N-wave duration (s) at Mach M and miss distance b (Whitham)."""
+    return WHITHAM_K_T * M * bl["d"] * (b / bl["L"]) ** 0.25 / (c * (M * M - 1) ** 0.375)
+
+
+def method_b_duration_amplitude(T_N, dP, c, bl, p_atm=101325.0, M_hint=None, M_max=None):
+    """Whitham fit of the measured N-wave (T_N, dP) for one candidate caliber (needs bl["d"], bl["L"]).
+
+    Eliminating b gives T_N ~ M (M^2-1)^(-1/3) * d^(4/3) / (L^(1/3) dP^(1/3) c). The Mach factor
+    changes only about +-5 % over M = 1.4-2.6 (minimum at sqrt(3)), so (T_N, dP) pin the Mach
+    number poorly, while T_N * dP^(1/3) is a caliber signature. Hence:
+      * M: Method A's Mach (M_hint) when available, kept within (1, M_max]; otherwise the Mach
+        that best fits T_N (the faster root when there are two);
+      * b: the miss distance that gives dP at that M;
+      * misfit_db = 20 log10(T_N model / T_N measured) at (M, b) -- the caliber score
+        (0 dB = this caliber explains the N-wave).
+    Also returns M_fit, the Mach that alone best fits T_N, and its root(s), for information.
+    Returns None for invalid input."""
+    if (T_N is None or not np.isfinite(T_N) or T_N <= 0 or dP is None or dP <= 0
+            or not bl.get("d") or not bl.get("L")):
         return None
-    M = brentq(f_M, 1.001, 10.0)
-    return M, b_est
+    m_hi = min(M_MAX_SEARCH, M_max) if M_max else M_MAX_SEARCH
+    if m_hi <= 1.01:
+        return None
+
+    def log_err(M):
+        return np.log(whitham_tn(M, whitham_b_from_dp(dP, M, bl, p_atm), c, bl) / T_N)
+
+    Ms = np.linspace(1.01, m_hi, 600)
+    err = np.array([log_err(M) for M in Ms])
+    roots = [float(Ms[i]) for i in range(1, len(Ms)) if err[i - 1] * err[i] <= 0]
+    M_fit = max(roots) if roots else float(Ms[int(np.argmin(np.abs(err)))])
+    if M_hint is not None and np.isfinite(M_hint) and M_hint > 1:
+        M, mode = float(min(max(M_hint, 1.01), m_hi)), "method_a_mach"
+    else:
+        M, mode = M_fit, "duration_fit"
+    return dict(M=M, mach_source=mode, b=float(whitham_b_from_dp(dP, M, bl, p_atm)),
+                misfit_db=float(20 * np.log10(np.exp(log_err(M)))),
+                M_fit=float(M_fit), roots=[(m, float(whitham_b_from_dp(dP, m, bl, p_atm))) for m in roots],
+                ambiguous=len(roots) > 1)
 
 
 def method_c_geometric_correction(k_hat_sw, n_hat_shooter, b_corr, M_B, dt_sw_to_mb, c):
@@ -150,7 +194,12 @@ def main():
 
     T_N = tdoa_data.get("t_n_sw_ref_channel")
     dp_sw_norm = tdoa_data.get("dp_sw_ref_channel")
-    dp_sw_pa = (abs(dp_sw_norm) * cfg["calibration"]["assumed_peak_pa_at_full_scale"]
+    norm_peak = tdoa_data.get("normalization_peak")
+    if norm_peak is None:
+        norm_peak = 1.0
+        print("[Det Stage 4] WARNING: no normalization_peak in the TDOA file (older Stage 2) -- "
+              "dP is taken as full-scale units; re-run Stage 2 for a correct amplitude.")
+    dp_sw_pa = (abs(dp_sw_norm) * norm_peak * cfg["calibration"]["assumed_peak_pa_at_full_scale"]
                 if dp_sw_norm is not None else None)
     dt_sw_to_mb = tdoa_data.get("dt_sw_to_mb_s")
 
@@ -161,28 +210,33 @@ def main():
     print(f"[Det Stage 4] Testing {len(cfg['bullet_reference_library'])} candidate caliber(s) "
           f"against Method B (T_N={T_N}, dP={dp_sw_pa} Pa assumed)...")
     caliber_results = {}
+    p_atm = cfg["physics"].get("atmospheric_pressure_pa", 101325.0)
     for cal, bl in cfg["bullet_reference_library"].items():
-        mb_result = method_b_duration_amplitude(T_N, dp_sw_pa, c, bl)
+        M_max = 1.02 * bl["v0"] / c if bl.get("v0") else None
+        mb_result = method_b_duration_amplitude(T_N, dp_sw_pa, c, bl, p_atm, M_hint=M_A, M_max=M_max)
         if mb_result is None:
             caliber_results[cal] = dict(mach=None, miss_distance_m=None, valid=False)
             print(f"    {cal}: no valid supersonic solution")
             continue
-        M_B, b_corr = mb_result
+        M_B, b_corr = mb_result["M"], mb_result["b"]
         M_C = method_c_geometric_correction(k_hat_sw, n_hat_shooter, b_corr, M_B, dt_sw_to_mb, c)
         caliber_results[cal] = dict(mach_method_b=M_B, mach_method_c=M_C,
-                                     miss_distance_m=b_corr, valid=True)
-        print(f"    {cal}: Method B Mach = {M_B:.3f}, Method C Mach = {M_C}, "
-              f"b = {b_corr:.2f} m")
+                                     miss_distance_m=b_corr, valid=True,
+                                     duration_misfit_db=mb_result["misfit_db"],
+                                     mach_source=mb_result["mach_source"], mach_duration_fit=mb_result["M_fit"],
+                                     method_b_roots=mb_result["roots"], ambiguous=mb_result["ambiguous"])
+        print(f"    {cal}: Method B Mach = {M_B:.3f} ({mb_result['mach_source']}), Method C Mach = {M_C}, "
+              f"b = {b_corr:.2f} m, T_N misfit = {mb_result['misfit_db']:+.2f} dB")
 
     result["caliber_candidates"] = caliber_results
 
     valid_calibers = {k: v for k, v in caliber_results.items() if v["valid"]}
     if valid_calibers:
-        # Best guess: smallest |M - typical supersonic midpoint| as a simple,
-        # transparent tie-break -- with only 2 near-identical reference
-        # calibers in this library, don't oversell this as a validated
-        # classifier (see module docstring).
-        best_cal = min(valid_calibers, key=lambda k: abs(valid_calibers[k]["mach_method_b"] - 2.25))
+        # Best guess: the caliber whose Whitham model fits the measured N-wave duration best
+        # (smallest |T_N misfit|, i.e. the best match of the T_N * dP^(1/3) signature).
+        # Calibers of similar d^(4/3) / L^(1/3) (the 7.62 family, .338) are hard to tell
+        # apart, so don't oversell this as a validated classifier (see module docstring).
+        best_cal = min(valid_calibers, key=lambda k: abs(valid_calibers[k]["duration_misfit_db"]))
         result["best_guess_caliber"] = best_cal
         print(f"[Det Stage 4] Best-guess caliber: {best_cal}")
     else:

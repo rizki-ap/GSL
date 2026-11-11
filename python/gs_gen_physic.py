@@ -15,6 +15,11 @@ What is modelled
                         scaled distance with the Kinney-Graham free-air fits.
   Propagation           speed of sound from temperature, first-order uniform wind,
                         ISO 9613-1 absorption applied as a causal frequency-domain filter.
+  Ground reflection     optional ([ground] enabled): flat ground below the array, image-source
+                        method. The reflected shockwave is the direct-shock solution at the
+                        image of each sensor (its own arrival time, miss distance, N-wave
+                        amplitude and duration); the reflected blast comes from the image path.
+                        Constant reflection coefficient per event.
   Geometry              any number of sensors, explicit shooter position and bullet direction.
 
 Assumptions and validity (see the physics audit for the numbers)
@@ -22,7 +27,8 @@ Assumptions and validity (see the physics audit for the numbers)
     ([bullet] drag_model = none); drag_model = exponential models the speed loss as
     v(s) = v0 exp(-s / decay_length) (constant drag coefficient), which shifts arrival times
     and TDOAs and switches the shockwave off where the bullet is no longer supersonic
-  * free field: no ground reflection, no muzzle directivity, no refraction or turbulence
+  * free field, or one flat reflecting ground ([ground]); no muzzle directivity, no refraction
+    or turbulence, no terrain or vegetation scattering
   * wind: uniform; applied to the acoustic path only
   * the N-wave result is a far-field result (the wave must be fully formed)
   * the Kinney-Graham fits are published for scaled distance Z <= 40 m/kg^(1/3); beyond that
@@ -59,15 +65,22 @@ KG_Z_MAX = 40.0         # m/kg^(1/3), upper end of the published Kinney-Graham r
 # Projectiles: d = diameter (m), L = length (m), v0 = nominal muzzle velocity (m/s),
 # lam = drag decay length (m) for drag_model = exponential: v(s) = v0 exp(-s / lam).
 # Nominal values; override with [bullet] diameter_mm, length_mm, muzzle_velocity_mps,
-# decay_length_m. The decay lengths are APPROXIMATE fits to typical published velocity
-# tables (5.56 ~570 m/s at 500 m, 7.62 ~560 m/s at 500 m, 12.7 ~490 m/s at 1500 m);
-# replace them with values from your own ballistic tables.
+# decay_length_m. v0 and lam match the BALLISTIC table of ana_sw_mb_range.py (the values
+# checked against the Cipatat recordings, Nov 2026); they are APPROXIMATE fits to typical
+# published velocity tables -- replace them with values from your own ballistic tables.
+# The list covers every small-arms calibre of the Cipatat development set (sound/Cipatat).
 BULLET_LIBRARY = {
-    "5.56_NATO":      dict(d=5.56e-3,  L=0.023,  v0=940.0, lam=1000.0),
-    "7.62_NATO":      dict(d=7.82e-3,  L=0.028,  v0=850.0, lam=1200.0),
-    "9mm_Parabellum": dict(d=9.02e-3,  L=0.0155, v0=370.0, lam=400.0),
-    "12.7_NATO":      dict(d=12.95e-3, L=0.058,  v0=890.0, lam=2500.0),
+    "5.56_NATO":      dict(d=5.56e-3,  L=0.023,  v0=940.0, lam=950.0),    # 5.56x45 M855/SS109 (M16, MINIMI 5.56)
+    "7.62_NATO":      dict(d=7.82e-3,  L=0.028,  v0=850.0, lam=1050.0),   # 7.62x51 M80 ball (MINIMI 7.62, SM2)
+    "7.62x39":        dict(d=7.92e-3,  L=0.0268, v0=718.0, lam=860.0),    # M43 ball (AK47)
+    "7.62x54R":       dict(d=7.92e-3,  L=0.032,  v0=830.0, lam=1150.0),   # 7N1 / LPS (Dragunov)
+    "8.6x70":         dict(d=8.58e-3,  L=0.039,  v0=900.0, lam=2000.0),   # .338 Lapua Magnum 250 gr (AX338)
+    "12.7_NATO":      dict(d=12.95e-3, L=0.058,  v0=890.0, lam=2500.0),   # 12.7x99 M33 ball (STEYR HS50)
+    "9mm_Parabellum": dict(d=9.02e-3,  L=0.0155, v0=370.0, lam=400.0),    # 9x19, barely supersonic
 }
+# Other names accepted for bullet.caliber
+BULLET_ALIASES = {"5.56x45": "5.56_NATO", "7.62x51": "7.62_NATO", "12.7x99": "12.7_NATO",
+                  "9x19": "9mm_Parabellum", ".338_Lapua": "8.6x70", "338_Lapua": "8.6x70"}
 DRAG_MODELS = ("none", "exponential")
 
 # Microphone-array presets, selectable with -mic_config=<NAME> on the command line or
@@ -75,10 +88,14 @@ DRAG_MODELS = ("none", "exponential")
 # geometry key it does not set (array_type, l_array, mic_positions, mic_positions_file) falls
 # back to [geometry]. These built-in copies make the presets work with an .ini that predates
 # them; a [mic_config.<NAME>] section in the .ini overrides them key by key.
-DEFAULT_MIC_CONFIG = "PilarV"
+DEFAULT_MIC_CONFIG = "Tetrahedral-0,3"
 MIC_CONFIG_PRESETS = {
-    # METRAVIB PILAR-V style 4-mic tetrahedron (edge [geometry] l_array, 0.30 m by default)
-    "PilarV": {"array_type": "tetrahedron"},
+    # Regular 4-mic tetrahedron, 0.30 m edge (formerly "PilarV"; default)
+    "Tetrahedral-0,3": {"array_type": "tetrahedron", "l_array": "0.30"},
+    # Real PILAR-V sensor ("Trackball"; Cipatat recordings): ring of 3 mics, radius
+    # 0.2055 m at 0/120/240 deg + 1 mic 0.2412 m above. Frame x = north, y = west, z = up.
+    "PILAR-V": {"array_type": "custom",
+                "mic_positions": "0.2055,0,0; -0.1028,0.178,0; -0.1028,-0.178,0; 0,0,0.2412"},
     # miniDSP UMA-8 v2, 4 of its 7 mics: the centre mic (#0, origin) + ring mics #1, #3, #5
     # (42.5 mm radius, 120 deg apart), all at z = 0 (devices/UMA-8-usb_mic_array.md; numbering and
     # rotation from ODAS minidsp.cfg, verify on the board)
@@ -144,8 +161,12 @@ DEFAULTS = {
     "shockwave":   {"mach_threshold": "1.1", "amp_scale": "1.0", "dur_scale": "1.0"},
     "muzzle_blast": {"w_g_tnt": "2.0", "amp_scale": "1.0", "dur_scale": "1.0"},
     "timing":      {"pre_roll": "0.010", "post_roll": "0.150"},
+    "ground":      {"enabled": "false", "array_height_m": "1.5",
+                    "reflection_coeff_sw": "0.7", "reflection_coeff_mb": "0.9"},
     "noise":       {"model": "realistic", "noise_floor_pa": "0.005",
-                    "rt60": "1.25", "noise_rms_pa": "0.075", "noise_slope": "-2.4"},
+                    "rt60": "1.25", "noise_rms_pa": "0.075", "noise_slope": "-2.4",
+                    "layers": "colored", "level_mode": "absolute", "snr_db": "30.0",
+                    "snr_ref": "shockwave"},
     "output":      {"basename": "gunshot_sim", "seed": "0"},
 }
 
@@ -186,6 +207,11 @@ def _validate_config(cfg):
         need(t["shooter_pos"] is not None, "trajectory.mode = explicit needs shooter_pos")
     need(cfg["timing"]["pre_roll"] >= 0 and cfg["timing"]["post_roll"] >= 0, "timing roll values must be >= 0")
     need(cfg["noise"]["rt60"] > 0, "noise.rt60 must be > 0")
+    need(cfg["noise"]["model"] in ("simple", "realistic", "layers"),
+         "noise.model must be 'simple', 'realistic' or 'layers'")
+    need(cfg["noise"]["level_mode"] in ("absolute", "snr"), "noise.level_mode must be 'absolute' or 'snr'")
+    need(cfg["noise"]["snr_ref"] in ("shockwave", "muzzle_blast", "peak"),
+         "noise.snr_ref must be 'shockwave', 'muzzle_blast' or 'peak'")
     need(cfg["adc_multi_channel"]["type"] in ("simultaneous", "multiplexed"),
          "adc_multi_channel.type must be 'simultaneous' or 'multiplexed'")
     sw, mb = cfg["shockwave"], cfg["muzzle_blast"]
@@ -193,15 +219,20 @@ def _validate_config(cfg):
     need(sw["amp_scale"] > 0 and sw["dur_scale"] > 0, "shockwave amp_scale and dur_scale must be > 0")
     need(mb["w_g_tnt"] > 0 and mb["amp_scale"] > 0 and mb["dur_scale"] > 0,
          "muzzle_blast w_g_tnt, amp_scale and dur_scale must be > 0")
+    gr = cfg["ground"]
+    need(gr["array_height_m"] > 0, "ground.array_height_m must be > 0")
+    need(-1.0 <= gr["reflection_coeff_sw"] <= 1.0 and -1.0 <= gr["reflection_coeff_mb"] <= 1.0,
+         "ground reflection coefficients must be in [-1, 1]")
 
 
 def add_mic_config_argument(parser):
     """Add the -mic_config option (also --mic_config / --mic-config) to a stage's argparse parser."""
     parser.add_argument("-mic_config", "--mic_config", "--mic-config", dest="mic_config", default=None,
                         metavar="NAME",
-                        help="microphone array preset: PilarV (4-mic tetrahedron) or UMA8 (miniDSP "
+                        help="microphone array preset: Tetrahedral-0,3 (regular tetrahedron, 0.30 m edge), "
+                             "PILAR-V (the real sensor) or UMA8 (miniDSP "
                              "UMA-8 v2: centre mic + ring mics #1, #3, #5) -- any [mic_config.NAME] section of the .ini. "
-                             "Default: [geometry] mic_config in the .ini (PilarV), or, for the noise "
+                             "Default: [geometry] mic_config in the .ini (Tetrahedral-0,3), or, for the noise "
                              "and ADC stages, the preset recorded in the upstream .json.")
 
 
@@ -213,10 +244,15 @@ def upstream_mic_config(meta):
         return None
 
 
+LEGACY_MIC_CONFIG_NAMES = {"pilarv": "Tetrahedral-0,3"}   # renamed Nov 2026
+
+
 def _mic_config_section(cp, name):
     """Name of the [mic_config.<name>] section (case-insensitive match)."""
     sections = {s.split(".", 1)[1].lower(): s for s in cp.sections() if s.startswith("mic_config.")}
     key = str(name).strip().lower()
+    if key in LEGACY_MIC_CONFIG_NAMES and key not in sections:
+        key = LEGACY_MIC_CONFIG_NAMES[key].lower()
     if key not in sections:
         valid = ", ".join(s.split(".", 1)[1] for s in sections.values())
         raise ValueError(f"unknown mic_config '{name}' -- valid: {valid} "
@@ -321,9 +357,20 @@ def load_config(path, mic_config=None, components=None):
                              amp_scale=cp.getfloat("muzzle_blast", "amp_scale"),
                              dur_scale=cp.getfloat("muzzle_blast", "dur_scale")),
         "timing": dict(pre_roll=cp.getfloat("timing", "pre_roll"), post_roll=cp.getfloat("timing", "post_roll")),
-        "noise": dict(model=cp.get("noise", "model"), noise_floor_pa=cp.getfloat("noise", "noise_floor_pa"),
+        "ground": dict(enabled=cp.getboolean("ground", "enabled"),
+                       array_height_m=cp.getfloat("ground", "array_height_m"),
+                       reflection_coeff_sw=cp.getfloat("ground", "reflection_coeff_sw"),
+                       reflection_coeff_mb=cp.getfloat("ground", "reflection_coeff_mb")),
+        "noise": dict(model=cp.get("noise", "model").strip().lower(),
+                      noise_floor_pa=cp.getfloat("noise", "noise_floor_pa"),
                       rt60=cp.getfloat("noise", "rt60"), noise_rms_pa=cp.getfloat("noise", "noise_rms_pa"),
-                      noise_slope=cp.getfloat("noise", "noise_slope")),
+                      noise_slope=cp.getfloat("noise", "noise_slope"),
+                      layers=[x.strip().lower() for x in cp.get("noise", "layers").split(",") if x.strip()],
+                      level_mode=cp.get("noise", "level_mode").strip().lower(),
+                      snr_db=cp.getfloat("noise", "snr_db"),
+                      snr_ref=cp.get("noise", "snr_ref").strip().lower(),
+                      layer_params={sec.split(".", 1)[1].lower(): dict(cp.items(sec, raw=True))
+                                    for sec in cp.sections() if sec.lower().startswith("noise.")}),
         "output": dict(basename=cp.get("output", "basename"), seed=cp.getint("output", "seed")),
     }
     _validate_config(cfg)
@@ -379,9 +426,11 @@ def resolve_bullet(cfg, c):
     then the library's nominal v0. diameter_mm and length_mm override the library.
     The dict also carries 'drag' (drag model) and 'lam' (decay length, m; decay_length_m
     overrides the library). With drag, the returned Mach is the MUZZLE Mach."""
-    name = cfg["bullet"]["caliber"]
+    name = cfg["bullet"]["caliber"].strip()
+    name = BULLET_ALIASES.get(name, name)
     if name not in BULLET_LIBRARY:
-        raise ValueError(f"Unknown bullet.caliber '{name}' -- valid: {list(BULLET_LIBRARY)}")
+        raise ValueError(f"Unknown bullet.caliber '{name}' -- valid: {list(BULLET_LIBRARY)} "
+                         f"(aliases: {list(BULLET_ALIASES)})")
     bl = dict(BULLET_LIBRARY[name])
     b = cfg["bullet"]
     if b["diameter_mm"] > 0:
@@ -516,6 +565,13 @@ def shock_geometry_drag(sensor_pos, bullet_origin, v_hat, v0, lam, c, wind=None,
     rec.update(beta=float(np.sqrt(M_e ** 2 - 1.0)), in_cone=True, R=R, x_emit=x_emit,
                t_emit=t_emit, c_eff=c_eff, t_arrive=t_emit + R / c_eff)
     return rec
+
+
+def image_positions(sensor_pos, ground_z):
+    """Mirror images of sensor positions (N, 3) in the horizontal ground plane z = ground_z."""
+    p = np.array(sensor_pos, dtype=float, copy=True)
+    p[..., 2] = 2.0 * ground_z - p[..., 2]
+    return p
 
 
 def muzzle_arrival(sensor_pos, shooter_pos, c, wind=None):

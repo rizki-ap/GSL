@@ -33,6 +33,7 @@ Usage
   python ana_sw_mb_range.py shot.wav -cal 7.62x54R -b 10       # single file, no metadata
   python ana_sw_mb_range.py ..\\sound\\Cipatat -plot            # also save per-file plots
   python ana_sw_mb_range.py ..\\sound\\Cipatat -v               # list every classified event
+  python ana_sw_mb_range.py ..\\sound\\Cipatat -max_caliber_mm 12.7   # development set only
 
 Output: a table on screen, plus sw_mb_range_results.md / .csv and
 sw_mb_range_overview.png in the folder of the first wav (or -o DIR).
@@ -151,6 +152,21 @@ def detect(x, fs, verbose=False, mb_in_tail=False):
 
 
 # --------------------------------------------------------------------------- metadata
+def caliber_mm(text):
+    """Calibre in mm from a metadata caliber string: '5.56×45 mm' -> 5.56, '105 mm HEP' -> 105,
+    'T40 (...)' -> 40. None if no number."""
+    m = re.search(r"(\d+(?:[.,]\d+)?)", text or "")
+    return float(m.group(1).replace(",", ".")) if m else None
+
+
+def meta_for(meta, name):
+    """Metadata row of a wav, falling back to the base shot for duplicates (shot-06a -> shot-06)."""
+    if name in meta:
+        return meta[name]
+    alt = re.sub(r"^(shot-\d+)[a-z]_", r"\1_", name)
+    return meta.get(alt, {})
+
+
 def read_metadata(path):
     """{wav_name: dict(weapon, caliber, D, b)} from the Reference values table of metadata.md."""
     meta = {}
@@ -182,6 +198,9 @@ def main():
     p.add_argument("-o", default=None, metavar="DIR", help="folder for the results")
     p.add_argument("-plot", action="store_true", help="also save a plot per file")
     p.add_argument("-v", action="store_true", help="list every classified event and its features")
+    p.add_argument("-max_caliber_mm", type=float, default=None, metavar="MM",
+                   help="only analyse recordings whose metadata caliber is at most this "
+                        "(e.g. 12.7 = the Cipatat development rule); others are skipped")
     p.add_argument("-mb_in_tail", action="store_true",
                    help="if no MB is found after the SW echo tail, accept one inside it (close shots)")
     args = p.parse_args()
@@ -202,6 +221,11 @@ def main():
     overview = []
     for w in wavs:
         name = os.path.basename(w)
+        if args.max_caliber_mm is not None:
+            mm = caliber_mm(meta_for(meta, name).get("caliber", ""))
+            if mm is None or mm > args.max_caliber_mm:
+                print(f"{name:28s} skipped (caliber {mm if mm is not None else '?'} mm > {args.max_caliber_mm:g} mm)")
+                continue
         x, fs = sf.read(w, dtype="float64", always_2d=True)
         if args.v:
             print(name)
@@ -285,7 +309,7 @@ def write_results(out_dir, rows, c):
             wr.writerow([r["file"], r["weapon"], r["key"], r["D_ref"], r["b"], r["found"],
                          "" if r["t_sw"] is None else f"{r['t_sw']:.4f}",
                          "" if r["t_mb"] is None else f"{r['t_mb']:.4f}",
-                         "" if r["band"] is None else f"{r['band'][0]}-{r['band'][1]}",
+                         "" if r["band"] is None else f"{r['band'][0]:g}-{r['band'][1]:g}",
                          "" if r["dt"] is None else f"{r['dt']:.4f}",
                          "" if r["dt_exp"] is None else f"{r['dt_exp']:.4f}",
                          "" if r["D_calc"] is None else f"{r['D_calc']:.1f}",

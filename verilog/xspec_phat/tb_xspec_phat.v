@@ -24,7 +24,7 @@ module tb_xspec_phat;
     localparam integer XP_BUDGET = 6200;
     localparam integer FFT_BUDGET= 11400;
     localparam real    PI        = 3.14159265358979323846;
-    localparam real    MIC_L     = 0.30;      // tetrahedron edge, m
+    localparam real    MIC_L     = 0.30;      // tetrahedron edge, m (Tetrahedral-0,3 test geometry)
     localparam real    C_SND     = 343.0;     // m/s
     localparam real    AMP       = 20000.0;   // signal amplitude (s16 range, as fe_cond)
 

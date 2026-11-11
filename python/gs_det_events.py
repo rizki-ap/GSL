@@ -12,8 +12,10 @@ time/duration. A SW and an MB are each optional: a recording gives SW+MB,
 SW only, MB only (subsonic weapon, slowed bullet, shot fired away from the
 array) or nothing. The MB does NOT have to follow a SW.
 
-1. Candidate events: peaks of the 1-4 kHz envelope and of the MB-band envelopes
-   (default 100-1000 Hz and 300-1000 Hz) rising >= 10 dB above their noise floor.
+1. Candidate events: peaks of the 1-4 kHz envelope and of the MB-band envelope(s)
+   (default one band, 150-1000 Hz: best single band on the Cipatat development set,
+   shots of 12.7 mm and below) rising >= 10 dB
+   above their noise floor.
 2. Features of each event:
      crest     impulsiveness of the 1-4 kHz envelope (peak vs its 20 ms surroundings)
      rise      10-90 % rise time of the pressure front (median over channels)
@@ -21,11 +23,12 @@ array) or nothing. The MB does NOT have to follow a SW.
      HF-LF     1-4 kHz level above noise minus MB-band level above noise
      prom      MB-band level vs the median 50-250 ms before the event
 3. SW = 1-4 kHz >= sw_min_hf_snr_db above noise, crest >= sw_min_crest_db, and a
-   near-instant front (rise <= sw_max_rise_ms) or a short low-frequency body
-   (LF width <= sw_max_lf_width_ms). Of several SWs (burst, echoes): the earliest
+   near-instant front (rise <= sw_max_rise_ms). Optional alternative to the front
+   test: a short low-frequency body (LF width <= sw_max_lf_width_ms; 0 = off, the
+   default -- it was only needed for 105/120 mm cannons, outside the 12.7 mm rule). Of several SWs (burst, echoes): the earliest
    within 6 dB of the strongest.
-4. MB candidates = not SW, MB band >= mb_min_lf_snr_db above noise, and
-   HF-LF <= mb_max_hf_excess_db. Score = prom - 0.3 * HF-LF (HF-LF clipped to
+4. MB candidates = not SW, MB band >= mb_min_lf_snr_db above noise,
+   HF-LF <= mb_max_hf_excess_db, and prom >= mb_min_prominence_db. Score = prom - 0.3 * HF-LF (HF-LF clipped to
    +-15 dB). The MB is the earliest candidate within 3 dB of the best score.
 5. Only if a SW was found: its first 25 ms belong to the SW, and its echo tail
    (until the 50 Hz-4 kHz level stays within 10 dB of the noise floor for 30 ms)
@@ -37,8 +40,9 @@ array) or nothing. The MB does NOT have to follow a SW.
    causal_envelope()).
 
 The default thresholds were tuned on real recordings (Cipatat test range, 4 ch,
-51.2 kHz: 17 shots from 5.56 mm to 120 mm, 300-1470 m). They are NOT tuned on
-the generator's output.
+51.2 kHz). Development rule (Nov 2026): only Cipatat shots of 12.7 mm and below
+are used (5.56 mm to 12.7 mm, 300-764 m); see sound/Cipatat/metadata.md. They are
+NOT tuned on the generator's output.
 """
 
 import numpy as np
@@ -46,13 +50,14 @@ from scipy.signal import butter, hilbert, sosfilt, sosfiltfilt
 
 DEFAULT_PARAMS = dict(
     sw_band_hz=(1000.0, 4000.0),
-    mb_bands_hz=((100.0, 1000.0), (300.0, 1000.0)),
+    mb_bands_hz=((150.0, 1000.0),),
     sw_min_hf_snr_db=25.0,
-    sw_min_crest_db=12.0,
+    sw_min_crest_db=14.0,
     sw_max_rise_ms=0.08,
-    sw_max_lf_width_ms=3.0,
-    mb_min_lf_snr_db=15.0,
+    sw_max_lf_width_ms=0.0,         # 0 = rule off (it was only needed for 105/120 mm cannons)
+    mb_min_lf_snr_db=11.0,
     mb_max_hf_excess_db=10.0,
+    mb_min_prominence_db=6.0,
     mb_in_tail=False,
 )
 
@@ -110,12 +115,15 @@ def onset(env, peak_idx, fs, back_s, frac=0.3):
     return a + int(below[-1]) + 1 if below.size else a
 
 
-def onset_sustained(env, peak_idx, fs, back_s, frac=0.3, hold_s=0.0005):
-    """First sample in [peak - back_s, peak] from which env stays >= frac * peak for hold_s.
+def onset_sustained(env, peak_idx, fs, back_s, frac=0.3, hold_s=0.0005, floor=0.0):
+    """First sample in [peak - back_s, peak] from which env stays above
+    floor + frac * (peak - floor) for hold_s. floor = the envelope's noise level, so a weak
+    event (peak only a few times the noise) is not started early inside the noise.
     More robust than onset() on jagged (causal, lightly smoothed) envelopes, where the last
-    dip below frac can sit well after the true start of a long event."""
+    dip below the threshold can sit well after the true start of a long event."""
     a = max(0, peak_idx - int(back_s * fs))
-    above = env[a:peak_idx + 1] >= frac * env[peak_idx]
+    thr = floor + frac * max(env[peak_idx] - floor, 0.0)
+    above = env[a:peak_idx + 1] >= thr
     w = max(1, int(hold_s * fs))
     run = np.convolve(above.astype(int), np.ones(w, dtype=int), mode="full")[w - 1:]  # run[i] = sum above[i:i+w]
     ok = np.flatnonzero(run[:len(above)] >= min(w, len(above)))
@@ -190,8 +198,9 @@ class EventFeatures:
 
 def is_sw_like(f, p):
     """Shockwave = strong, impulsive SW-band event with a near-instant front or a short LF body."""
+    width_ok = p["sw_max_lf_width_ms"] > 0 and f["lf_width_ms"] <= p["sw_max_lf_width_ms"]
     return (f["snr_hf"] >= p["sw_min_hf_snr_db"] and f["crest"] >= p["sw_min_crest_db"]
-            and (f["rise_ms"] <= p["sw_max_rise_ms"] or f["lf_width_ms"] <= p["sw_max_lf_width_ms"]))
+            and (f["rise_ms"] <= p["sw_max_rise_ms"] or width_ok))
 
 
 # --------------------------------------------------------------------------- main entry
@@ -224,7 +233,8 @@ def detect_sw_mb(x, fs, params=None, verbose=False):
             continue                                   # same event found in several bands
         f["t"] = f["idx_hf"] / fs
         f["cls"] = ("SW" if is_sw_like(f, p) else
-                    "MB?" if f["snr_lf"] >= p["mb_min_lf_snr_db"] and f["hf_excess"] <= p["mb_max_hf_excess_db"]
+                    "MB?" if (f["snr_lf"] >= p["mb_min_lf_snr_db"] and f["hf_excess"] <= p["mb_max_hf_excess_db"]
+                              and f["prominence"] >= p["mb_min_prominence_db"])
                     else "-")
         events.append(f)
 
@@ -273,7 +283,8 @@ def detect_sw_mb(x, fs, params=None, verbose=False):
         ec = causal_envelope(x, fs, band, 1e-3)
         a, b = max(0, mb["idx_lf"] - int(0.01 * fs)), min(len(ec), mb["idx_lf"] + int(0.02 * fs))
         pk = a + int(np.argmax(ec[a:b]))
-        res.update(t_mb=onset_sustained(ec, pk, fs, back + (pk - mb["idx_lf"]) / fs) / fs, mb_idx=pk,
+        res.update(t_mb=onset_sustained(ec, pk, fs, back + (pk - mb["idx_lf"]) / fs,
+                                        floor=float(np.median(ec))) / fs, mb_idx=pk,
                    mb_band=F.mb_bands[mb["band_k"]], mb_features=mb)
 
     res["event_class"] = ("SW+MB" if res["t_sw"] is not None and res["t_mb"] is not None else
@@ -303,5 +314,5 @@ def channel_onset(sig, fs, center_idx, half_win_s, smooth_s, band, back_s=None, 
          envelope(bandpass(sig[lo_i:hi_i], fs, *band), fs, smooth_s))
     pk = (a - lo_i) + int(np.argmax(e[a - lo_i:b - lo_i]))
     if causal:
-        return lo_i + onset_sustained(e, pk, fs, back_s, frac)
+        return lo_i + onset_sustained(e, pk, fs, back_s, frac, floor=float(np.percentile(e, 20)))
     return lo_i + onset(e, pk, fs, back_s, frac)

@@ -1685,7 +1685,7 @@ print(f"  |k_hat| = {np.linalg.norm(k_vec_est):.6f}  (should be ~ 1.0)")
 # ╔══════════════════════════════════════════════════════════════════════════════════╗
 # ║  SECTION 10.2 — PILAR-V Range Estimation + 3D Localization                      ║
 # ╚══════════════════════════════════════════════════════════════════════════════════╝
-#  PILAR-V FORMULA  (Valiere et al., EURONOISE 2006; METRAVIB patent)
+#  PILAR-V FORMULA  (Valiere et al., EURONOISE 2006)
 #  ------------------------------------------------------------------------------
 #  Simplified geometry (shooter at (-R, 0), bullet flies in +x, miss dist. b):
 #      t_SW = (R + b.beta) / (M.c)         Mach cone (Section 5.1)

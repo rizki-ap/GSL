@@ -3,7 +3,7 @@
 ## Purpose
 
 An acoustic gunshot detection and shooter-localization system modeled on the
-METRAVIB PILAR-V (product reference: Boomerang). A 4-microphone tetrahedral
+PILAR-V (product reference: Boomerang). A 4-microphone tetrahedral
 array detects supersonic gunshots and determines shooter range and bearing
 by exploiting the two-event physics of a supersonic shot:
 
@@ -35,6 +35,14 @@ https://pub.dega-akustik.de/DAGA_1999-2008/data/articles/001903.pdf
 /verilog          -- FPGA/RTL prototyping (TDOA estimation, in progress)
 ```
 
+## Microphone-array presets (`mic_config`, Nov 2026)
+
+| Name | Geometry | Use |
+|---|---|---|
+| `PILAR-V` | Real PILAR-V sensor ("Trackball"): ring of 3 mics (radius 0.2055 m, 0/120/240°) + 1 mic 0.2412 m above; max TDOA ≈ 1.04 ms. See `devices/mic_pilar-v.md`. | Real recordings (Cipatat) |
+| `Tetrahedral-0,3` | Regular tetrahedron, 0.30 m **edge** (circumradius 0.184 m); formerly named `PilarV` (old .json files still resolve). | Default in `gen_config.ini` and `det_config.ini` (simulations, FPGA milestones) |
+| `UMA8` | miniDSP UMA-8 v2, 4 of its 7 mics | UMA-8 recordings |
+
 ## Pipeline Architecture
 
 Two independent pipelines, plus shared utilities. **Hard rule: no file in
@@ -52,11 +60,11 @@ independently of the underlying physics.
 
 | File | Role |
 |---|---|
-| `gs_gen_physic.py` | Shared physics/config library. Whitham N-wave, Friedlander blast, ISO 9613-1 atmospheric absorption, analog gain-chain math, noise/reverb models, config schema. Imported by all other `gs_gen_*` files. |
-| `gs_gen_clean_signal.py` | Stage 1. Pure physics, no noise: geometry → bullet property → trajectory → N-wave + Friedlander waveforms. Outputs `*_clean.wav` (float32, **actual Pa units**, not normalized) + `*_clean.json` (full per-mic ground truth: arrival times, T_N, dP, etc). |
-| `gs_gen_add_noise.py` | Stage 2. Adds ENVIRONMENTAL noise/reverb only (`simple` flat floor or `realistic` reverb+colored-noise model). No mic/ADC effects. Outputs `*_noisy.wav` (still float32 Pa units) + `*_noisy.json`. |
+| `gs_gen_physic.py` | Shared physics/config library. Whitham N-wave, Friedlander blast, ISO 9613-1 atmospheric absorption, flat-ground image positions, analog gain-chain math, noise/reverb helpers, config schema. Imported by all other `gs_gen_*` files. |
+| `gs_gen_clean_signal.py` | Stage 1. Pure physics, no noise: geometry → bullet property → trajectory → N-wave + Friedlander waveforms, plus the **ground reflection** (`[ground]`, image-source method, Nov 2026: the reflected shock is the direct-shock solution at each mic's mirror image, so it has its own delay, TDOAs, miss distance, amplitude and duration; constant reflection coefficient per event; calibrated on Cipatat). Outputs `*_clean.wav` (float32, **actual Pa units**, not normalized) + `*_clean.json` (full per-mic ground truth: arrival times, T_N, dP, etc). |
+| `gs_gen_add_noise.py` | Stage 2. Adds the ENVIRONMENT only. `model = layers` (Nov 2026) combines any of: `colored` (piecewise power law, part common to all mics), `wind` (gusty, incoherent), `tones` (machinery, from set directions), `chirps` (insects), `diffuse` (noise from all directions, correct inter-mic coherence), `real` (noise cut from real recordings), `impulses` (interfering clicks/blasts/N-waves, times in the JSON), `echoes` (discrete outdoor echoes, each with its own direction) and `room` (diffuse tail with set direct-to-reverberant ratio); levels absolute or set by a target SNR (`-snr`). The older `simple` and `realistic` models remain. No mic/ADC effects. Outputs `*_noisy.wav` (still float32 Pa units) + `*_noisy.json`. |
 | `gs_gen_apply_adc.py` | Stage 3. Mic bandpass → sensitivity calibration → ADC bit-depth quantization. Two calibration modes: `peak_match` (empirical, rescale to a measured real-recording peak) or `gain_chain` (absolute, computed from mic sensitivity/preamp gain/ADC Vref — can genuinely clip, which is the point). Supports per-channel mic/preamp variation and shared-ADC effects (gain/offset mismatch, and critically, **multiplexed-ADC timing skew**). Outputs the final 4-channel 16-bit PCM `.wav` + `.json`. |
-| `gen_config.ini` | All generation parameters: geometry, bullet (caliber/Mach), trajectory (range/miss distance), atmosphere, noise model, ADC/analog-chain hardware. |
+| `gen_config.ini` | All generation parameters: geometry, bullet (caliber/Mach), trajectory (range/miss distance), atmosphere, noise model, ADC/analog-chain hardware. The bullet library (`BULLET_LIBRARY` in `gs_gen_physic.py`) covers the six small-arms calibres of the Cipatat development set (5.56×45, 7.62×51, 7.62×39, 7.62×54R, 8.6×70, 12.7×99) plus 9 mm. |
 
 Run order: `gs_gen_clean_signal.py` → `gs_gen_add_noise.py` → `gs_gen_apply_adc.py`.
 
@@ -71,7 +79,7 @@ simulated) and its own config.
 | `gs_det_events.py` | Library: array-level SW/MB event classifier used by Stage 1 `classify` (and by `ana_sw_mb_range.py`). Thresholds tuned on real recordings (Cipatat). Stages 2–4 handle `SW only` (bullet direction, no bearing) and `MB only` (bearing, no range/Mach). |
 | `gs_det_tdoa.py` | Stage 2. GCC-PHAT across all 6 mic pairs (SW and MB separately), using **shared-reference windowing** (all channels windowed around ONE reference channel's onset — critical, see Known Limitations). Outputs `*_tdoa.json` (6 TDOA pairs × 2 events, plus `Dt`). |
 | `gs_det_shooter_locator.py` | Stage 3. Solves DOA (bearing) from MB TDOA via linear system; solves bullet direction `k_hat_sw` from SW TDOA. Self-contained rough Mach estimate (angle-only) + PILAR-V range solve. Doesn't depend on Stage 4. |
-| `gs_det_classify_bullet.py` | Stage 4. Three independent Mach-estimation methods (A: angle-only, calibration-independent; B: duration+amplitude, needs the detector's own assumed hardware calibration; C: geometric correction using B's result). Tests all calibers in the reference library. |
+| `gs_det_classify_bullet.py` | Stage 4. Three independent Mach-estimation methods (A: angle-only, calibration-independent; B: duration+amplitude, needs the detector's own assumed hardware calibration; C: geometric correction using B's result). Tests all calibers in the reference library (`det_config.ini` `[bullet_reference_library]`: the same six calibres, kept as an independent copy). Method B fits Whitham's N-wave equations (the generator's physics; checked on Cipatat, Nov 2026). Amplitude = Stage-1 normalized dP × `normalization_peak` × `assumed_peak_pa_at_full_scale` (1520 Pa, the PILAR-V estimate; per-array override `assumed_peak_pa_at_full_scale.<mic_config>`). |
 | `det_config.ini` | Array geometry (its own installed hardware, legitimate to know), detection thresholds, GCC-PHAT settings, an **independent copy** of the bullet reference library, and the detector's own assumed sensitivity calibration (`assumed_peak_pa_at_full_scale`). |
 
 Run order: `gs_det_signal_prepare.py` → `gs_det_tdoa.py` → `gs_det_shooter_locator.py` → `gs_det_classify_bullet.py` (last two can run independently once Stage 2 is done).
@@ -82,7 +90,9 @@ Run order: `gs_det_signal_prepare.py` → `gs_det_tdoa.py` → `gs_det_shooter_l
 |---|---|
 | `util_plot_signal.py` | Plots every channel of a multichannel `.wav`: full-duration + auto-zoomed view around the loudest event, overlay mode, handles any dtype (int PCM normalized, float kept in raw units — important since generation-block float WAVs hold real Pa values). |
 | `util_get_accoustic_param.py` | Estimates noise/reverb/calibration parameters (RT60 via Schroeder backward integration with multi-window fit-quality reporting, noise floor, PSD slope, approximate mic passband) directly from a **real recording** — this is what should have produced `gen_config.ini`'s `[calibration]` constants in the first place. Also has `--check-channels` to flag bad channels (inverted polarity, low array-consensus correlation) across a multi-mic dataset before using any of them as a reference. Self-contained (no external project dependency). |
-| `util_signal_similarity.py` | Compares any two signals: classical suite (Pearson/cross-correlation, PSD shape, Schroeder RT60) and an audio-ML suite (RMSE, Log-Spectral Distance, Mel-spectrogram MSE/SSIM, MFCC cosine similarity — both a naive whole-clip version and an event-windowed version, since the naive version is misleadingly high on mostly-silent recordings — and DTW distance). CLI or library. |
+| `util_signal_similarity.py` | Measured vs synthesized gunshots, per Paper-Generator Section 4.3: Pearson r, SNR_synth, peak and duration errors (T_N / T_mb measured from the signals), event-PSD LSD, blast f_pk and N-wave f_null, pooled coherence (only with ≥ 8 segments), multichannel TDOA MAE/RMSE/Bias (vs generator labels with `--synth-json`), shock-to-blast delay error. Pools several recordings. See `util_signal_similarity.md`. (`util_signal_similarity_paper.py` forwards to it.) |
+| `ana_ground_reflection.py` | Measures the ground-reflected shockwave in the Cipatat recordings (residual after removing the clean twin's direct wave, template match): delay, reflected/direct ratio, and the array height from the ring/top delay ratio, independent of the trajectory. |
+| `util_gen_cipatat_clean.py` | Clean twins of the Cipatat development recordings (01–06, 06a, 15, 16, 17) in `sound/Cipatat_clean/`: the reference scene rebuilt with Stage 1 (PILAR-V, exponential drag, per-shot temperature), bullet side chosen from the SW TDOAs, SW and MB levels and durations fitted to each event, events placed at the recording's per-channel arrivals. No noise, reverberation or ground reflection. `--align array` keeps the model TDOAs, `--no-fit` the model levels. See `sound/Cipatat_clean/metadata.md`. |
 
 ## Key Physics & Algorithms Implemented
 
@@ -201,6 +211,7 @@ array L=0.30m, 5.56 NATO):
 # Generate a simulated signal
 python gs_gen_clean_signal.py gen_config.ini -o shot
 python gs_gen_add_noise.py shot_clean.wav gen_config.ini
+python gs_gen_add_noise.py shot_clean.wav gen_config.ini -o shot20 -layers colored,wind,tones,echoes -snr 20
 python gs_gen_apply_adc.py shot_noisy.wav gen_config.ini
 
 # Run detection on it (or on a real recording)
@@ -215,5 +226,6 @@ python util_get_accoustic_param.py --check-channels rec_ch0.wav rec_ch1.wav ... 
 
 # Visualize / compare
 python util_plot_signal.py shot.wav
-python util_signal_similarity.py real.wav sim.wav
+python util_signal_similarity.py real.wav sim_clean.wav --synth-json sim.json --meas-scale 1520 --plot out/
+python util_gen_cipatat_clean.py                # clean Cipatat twins -> ../sound/Cipatat_clean
 ```

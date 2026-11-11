@@ -1,0 +1,139 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1110 760" width="1110" height="760" font-family="Segoe UI, Arial, Helvetica, sans-serif" xmlns:c2pa="http://c2pa.org/manifest">
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#222"/>
+    </marker>
+    <marker id="arn" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse">
+      <path d="M0,0 L10,5 L0,10 z" fill="#1f3a93"/>
+    </marker>
+    <g id="ml">
+      <circle cx="0" cy="0" r="7" fill="#e8590c" stroke="#fff" stroke-width="1.5"/>
+      <circle cx="-7" cy="-6" r="4" fill="#868e96" stroke="#fff" stroke-width="1"/>
+    </g>
+    <style>
+      .p  { fill:#2b6cb0; stroke:#1a4971; stroke-width:1.5; }
+      .o  { fill:#4c9a2a; stroke:#2f6b16; stroke-width:1.5; }
+      .a  { fill:#f2b705; stroke:#c48f00; stroke-width:1.5; }
+      .t  { fill:#fff; font-size:15px; font-weight:600; text-anchor:middle; dominant-baseline:central; }
+      .ts { fill:#fff; font-size:13px; font-weight:600; text-anchor:middle; dominant-baseline:central; }
+      .w  { fill:none; stroke:#222; stroke-width:1.4; }
+      .wa { fill:none; stroke:#222; stroke-width:1.4; marker-end:url(#ar); }
+      .lbl{ font-size:13px; font-weight:600; text-anchor:middle; dominant-baseline:central; fill:#222; }
+      .note{ font-size:13px; font-style:italic; fill:#1f3a93; }
+      .nl { fill:none; stroke:#1f3a93; stroke-width:1.1; marker-end:url(#arn); }
+    </style>
+  </defs>
+
+  <rect width="1110" height="760" fill="#ffffff"/>
+  <text x="20" y="34" font-size="22" font-weight="700" fill="#c0392b">PILAR-V – detection processing chain</text>
+  <text x="20" y="58" font-size="14" fill="#444">Block architecture of the PILAR-V, used to understand its performance limits</text>
+
+  <!-- ===== Wires (drawn first, under boxes) ===== -->
+  <path class="wa" d="M120,232 H160 V175 H208"/>
+  <path class="wa" d="M340,175 H435"/>
+  <path class="wa" d="M607,170 H705"/>
+  <!-- Classifier 1 fan-out -->
+  <path class="w"  d="M782,183 V203"/>
+  <path class="w"  d="M327,203 H961"/>
+  <path class="wa" d="M327,203 V225"/>
+  <path class="wa" d="M702,203 V223"/>
+  <path class="wa" d="M961,203 V218"/>
+  <!-- Others -> Conditions -->
+  <path class="wa" d="M702,255 V275"/>
+  <path class="wa" d="M572,295 H497"/>
+  <path class="wa" d="M702,315 V343"/>
+  <!-- Classifier 3 outputs -->
+  <path class="wa" d="M628,360 H405 V242 H372"/>
+  <path class="wa" d="M780,360 H877 V236 H915"/>
+  <path class="wa" d="M704,375 V401 H535"/>
+  <!-- SW -> Classifier 2 -->
+  <path class="wa" d="M285,242 H189 V336"/>
+  <!-- Classifier 2 / Friendly Bubble -> Others -->
+  <path class="w"  d="M265,352 H355 V401"/>
+  <path class="w"  d="M261,453 H355 V401"/>
+  <path class="wa" d="M355,401 H443"/>
+  <!-- Classifier 2 -> Caliber -> Friendly Bubble -->
+  <path class="w"  d="M189,368 V389"/>
+  <path class="wa" d="M189,413 V436"/>
+  <!-- Others (centre) -> end -->
+  <path class="wa" d="M489,417 V441"/>
+  <!-- Friendly Bubble -> DSL -->
+  <path class="wa" d="M106,453 H68 V543"/>
+  <!-- SW -> Angular Localization (left) -->
+  <path class="wa" d="M180,501 V526 H198"/>
+  <path class="wa" d="M308,542 V591 H251"/>
+  <path class="wa" d="M415,526 H590"/>
+  <!-- MB branch -->
+  <path class="wa" d="M961,252 V401"/>
+  <path class="wa" d="M967,435 V527 H700"/>
+  <!-- Buffer -> Fusion -> Fire/Shot -->
+  <path class="wa" d="M645,549 V576 H469 V596"/>
+  <path class="wa" d="M383,614 H246 V641 H110"/>
+
+  <!-- ===== Boxes ===== -->
+  <rect class="p" x="45" y="160" width="75" height="150" rx="12"/>
+  <text class="t" transform="translate(82.5,235) rotate(-90)" font-size="18">Acquisition</text>
+
+  <rect class="p" x="210" y="160" width="130" height="30" rx="4"/><text class="t" x="275" y="175">Denoising</text>
+  <rect class="p" x="437" y="155" width="170" height="30" rx="4"/><text class="t" x="522" y="170">Pulse Detection</text>
+  <rect class="p" x="707" y="153" width="150" height="30" rx="4"/><text class="t" x="782" y="168">Classifier 1</text>
+  <use href="#ml" x="855" y="155"/>
+
+  <rect class="o" x="285" y="227" width="85" height="30" rx="4"/><text class="t" x="327" y="242">SW</text>
+  <rect class="o" x="660" y="225" width="85" height="30" rx="4"/><text class="t" x="702" y="240">Others</text>
+  <rect class="o" x="917" y="220" width="88" height="32" rx="4"/><text class="t" x="961" y="236">MB</text>
+
+  <polygon class="p" points="572,295 702,277 832,295 702,313"/>
+  <text class="ts" x="702" y="295">Conditions OK?</text>
+  <rect x="514" y="270" width="46" height="20" fill="#fff" stroke="#222" stroke-width="1.2" rx="2"/><text class="lbl" x="537" y="280">No</text>
+  <circle cx="490" cy="295" r="8" fill="#111"/>
+  <rect x="648" y="318" width="44" height="20" fill="#fff" stroke="#222" stroke-width="1.2" rx="2"/><text class="lbl" x="670" y="328">Yes</text>
+
+  <rect class="p" x="628" y="345" width="152" height="30" rx="4"/><text class="t" x="704" y="360">Classifier 3</text>
+  <use href="#ml" x="778" y="347"/>
+
+  <rect class="p" x="113" y="338" width="152" height="30" rx="4"/><text class="t" x="189" y="353">Classifier 2</text>
+  <use href="#ml" x="263" y="340"/>
+  <rect class="o" x="93" y="389" width="182" height="24" rx="3"/><text class="ts" x="184" y="401">Caliber_Estimation1</text>
+
+  <rect class="o" x="445" y="385" width="88" height="32" rx="4"/><text class="t" x="489" y="401">Others</text>
+  <circle cx="489" cy="450" r="8" fill="#111"/>
+
+  <rect class="p" x="106" y="438" width="155" height="30" rx="4"/><text class="t" x="183" y="453">Friendly Bubble</text>
+  <use href="#ml" x="259" y="440"/>
+  <rect class="o" x="47" y="479" width="150" height="22" rx="3"/><text class="ts" x="122" y="490">SW</text>
+
+  <rect class="p" x="200" y="510" width="215" height="32" rx="4"/><text class="t" x="307" y="526">Angular Localization</text>
+  <rect class="p" x="862" y="403" width="210" height="32" rx="4"/><text class="t" x="967" y="419">Angular Localization</text>
+
+  <!-- Buffer cylinder -->
+  <path class="p" d="M592,513 v30 a53,7 0 0 0 106,0 v-30"/>
+  <ellipse class="p" cx="645" cy="513" rx="53" ry="7"/>
+  <text class="t" x="645" y="532">Buffer</text>
+
+  <rect class="a" x="20" y="545" width="93" height="34" rx="4"/><text class="t" x="66" y="562">DWL</text>
+  <rect class="o" x="62" y="579" width="187" height="25" rx="3"/><text class="ts" x="155" y="591">Angular Sectors</text>
+
+  <rect class="p" x="383" y="598" width="172" height="32" rx="4"/><text class="t" x="469" y="614">Fusion SW-MB</text>
+  <use href="#ml" x="553" y="600"/>
+
+  <rect class="a" x="15" y="624" width="93" height="34" rx="4"/><text class="t" x="61" y="641">Fire / Shot</text>
+  <rect class="o" x="58" y="658" width="187" height="25" rx="3"/><text class="ts" x="151" y="670">Caliber_Estimation2</text>
+  <rect class="o" x="58" y="685" width="187" height="25" rx="3"/><text class="ts" x="151" y="697">Angles and Distance</text>
+
+  <!-- ===== Annotations ===== -->
+  <text class="note" x="545" y="118">detect impulsive</text>
+  <path class="nl" d="M560,124 L530,152"/>
+  <text class="note" x="905" y="118">neural network?</text>
+  <path class="nl" d="M915,124 L868,148"/>
+  <text class="note" x="294" y="275">shock wave</text>
+  <text class="note" x="1012" y="240">muzzle blast</text>
+
+  <!-- ===== Legend ===== -->
+  <rect x="520" y="665" width="575" height="70" rx="10" fill="#fff" stroke="#222" stroke-width="1.4"/>
+  <rect class="o" x="540" y="680" width="70" height="16" rx="2"/><text x="622" y="688" font-size="14" dominant-baseline="central">Outputs</text>
+  <rect class="p" x="540" y="706" width="70" height="16" rx="2"/><text x="622" y="714" font-size="14" dominant-baseline="central">Processing steps</text>
+  <rect class="a" x="790" y="680" width="70" height="16" rx="2"/><text x="872" y="688" font-size="14" dominant-baseline="central">Raised alert</text>
+  <use href="#ml" x="825" y="716"/><text x="872" y="714" font-size="14" dominant-baseline="central">Learning-based step</text>
+  <text x="1095" y="752" font-size="11" fill="#666" text-anchor="end">SW = shockwave, MB = muzzle blast, DWL = detection without localization · blue italics = handwritten notes</text>
+<metadata><c2pa:manifest>AAAWgmp1bWIAAAAeanVtZGMycGEAEQAQgAAAqgA4m3EDYzJwYQAAABZcanVtYgAAAEdqdW1kYzJtYQARABCAAACqADibcQN1cm46YzJwYTo4YTYzNTE3Yy04NTI4LTQxMDgtODA0Yi0wMjhiYzkyZjY4ZDEAAAADl2p1bWIAAAApanVtZGMyYXMAEQAQgAAAqgA4m3EDYzJwYS5hc3NlcnRpb25zAAAAALxqdW1iAAAARGp1bWRjYm9yABEAEIAAAKoAOJtxE2MycGEuaW5ncmVkaWVudC52MwAAAAAYYzJzaAJ8uBNv1EReFHMnEnOC+WUAAABwY2JvcqNpZGM6Zm9ybWF0bWltYWdlL3N2Zyt4bWxqaW5zdGFuY2VJRHgseG1wOmlpZDo3Y2YyMDVkMi1hMTJkLTRmYzgtYjE5MC03YWI1ODg0MDBlOWVscmVsYXRpb25zaGlwaHBhcmVudE9mAAAB4mp1bWIAAABBanVtZGNib3IAEQAQgAAAqgA4m3ETYzJwYS5hY3Rpb25zLnYyAAAAABhjMnNoZ4Iy1zCz/I3tO3R+BfMMRgAAAZljYm9yomdhY3Rpb25zgqJmYWN0aW9ua2MycGEub3BlbmVkanBhcmFtZXRlcnOha2luZ3JlZGllbnRzgaJjdXJseC1zZWxmI2p1bWJmPWMycGEuYXNzZXJ0aW9ucy9jMnBhLmluZ3JlZGllbnQudjNkaGFzaFggvPa+5FBMAQ/NKYM/mIRPU+zf+B/k64NGDzmq4EuH8sekZmFjdGlvbngdY29tLmFudGhyb3BpYy5jbGF1ZGUucHJvdmlkZWRqcGFyYW1ldGVyc6F4H2NvbS5hbnRocm9waWMub3JpZ2luLWNvbmZpZGVuY2VndW5rbm93bmtkZXNjcmlwdGlvbnhmQ2xhdWRlIHByb3ZpZGVkIHRoaXMgZmlsZSBhdCB0aGUgcmVxdWVzdCBvZiBhIHVzZXIgYW5kIG1heSBoYXZlIGNyZWF0ZWQgb3IgbW9kaWZpZWQgdGhlIGZpbGUgY29udGVudHMubXNvZnR3YXJlQWdlbnShZG5hbWVmQ2xhdWRlcmFsbEFjdGlvbnNJbmNsdWRlZPUAAADIanVtYgAAAEBqdW1kY2JvcgARABCAAACqADibcRNjMnBhLmhhc2guZGF0YQAAAAAYYzJzaGffyKAasgnXfvA5mo4L4ycAAACAY2JvcqVjYWxnZnNoYTI1NmNwYWRMAAAAAAAAAAAAAAAAZGhhc2hYIEbS5O8D/pYFsjjIR5z3UOtBxmF3JDzUduBJUqrLco5bZG5hbWVuanVtYmYgbWFuaWZlc3RqZXhjbHVzaW9uc4GiZXN0YXJ0GSA7Zmxlbmd0aBkeBAAAAj5qdW1iAAAAJ2p1bWRjMmNsABEAEIAAAKoAOJtxA2MycGEuY2xhaW0udjIAAAACD2Nib3KlY2FsZ2ZzaGEyNTZpc2lnbmF0dXJleE1zZWxmI2p1bWJmPS9jMnBhL3VybjpjMnBhOjhhNjM1MTdjLTg1MjgtNDEwOC04MDRiLTAyOGJjOTJmNjhkMS9jMnBhLnNpZ25hdHVyZWppbnN0YW5jZUlEeCx4bXA6aWlkOmMwYWNmMTg3LWFjNGEtNDQwNy04Nzc4LWJkMjViMDNmNGUyZnJjcmVhdGVkX2Fzc2VydGlvbnODomN1cmx4LXNlbGYjanVtYmY9YzJwYS5hc3NlcnRpb25zL2MycGEuaW5ncmVkaWVudC52M2RoYXNoWCC89r7kUEwBD80pgz+YhE9T7N/4H+Trg0YPOargS4fyx6JjdXJseCpzZWxmI2p1bWJmPWMycGEuYXNzZXJ0aW9ucy9jMnBhLmFjdGlvbnMudjJkaGFzaFggen9vYFqVtFAZHmwsN1Gc3AQZyM3olMfsvQSug+wcEh+iY3VybHgpc2VsZiNqdW1iZj1jMnBhLmFzc2VydGlvbnMvYzJwYS5oYXNoLmRhdGFkaGFzaFgg14ilSMzlLZgFv9vylOVVnhpZZrFR/Lb85RdaqzDh+Jd0Y2xhaW1fZ2VuZXJhdG9yX2luZm+jZG5hbWVvQW50aHJvcGljIEZpbGVzZ3ZlcnNpb25lMS4wLjBrc3BlY1ZlcnNpb25lMi40LjAAABA4anVtYgAAAChqdW1kYzJjcwARABCAAACqADibcQNjMnBhLnNpZ25hdHVyZQAAABAIY2JvctKEWQISogEmGCFZAgowggIGMIIBjaADAgECAhRA5aAK7sI50L64g/oGQgU9Z1UTADAKBggqhkjOPQQDAzBJMRcwFQYDVQQKEw5BbnRocm9waWMsIFBCQzEuMCwGA1UEAxMlQW50aHJvcGljIENvbnRlbnQgQ3JlZGVudGlhbHMgUm9vdCBDQTAeFw0yNjA4MDcxODQzNTZaFw0yODA4MDYxOTQzNTZaMEQxFzAVBgNVBAoTDkFudGhyb3BpYywgUEJDMSkwJwYDVQQDEyBBbnRocm9waWMgQ2xhdWRlIENvbnRlbnQgU2lnbmluZzBZMBMGByqGSM49AgEGCCqGSM49AwEHA0IABJh6CmvLUBgFFNU0vUKlOVtE6djd17L5SuwX0LemFisBM3dkd/3cyjxFA3Qo5S46fX0/ihY0VZ7mfb9KF703t5OjWDBWMA4GA1UdDwEB/wQEAwIHgDAVBgNVHSUEDjAMBgorBgEEAYPoXgIBMAwGA1UdEwEB/wQCMAAwHwYDVR0jBBgwFoAUzlHiBIFOZFsj+OPEz5o+nMHXXMIwCgYIKoZIzj0EAwMDZwAwZAIwMXMdFJ4BetLLVY7ORuE9noqbbAZOZn/aArXyTwFAZfKrPzxF2vPoJNf1+UCdg1XGAjBwX1zd9WGqYkqmL5SFqw1QySjr1zJfpJM9+1rdDwSPLMOPOjKuiXjoU/pUUeG9RwmhY3BhZFkNngAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPZYQOYVxcuS+cx3gDJut0tz66zmkMDaCzyjtLxvJIF/WL/yiuYUm1Q4r2WaMCKDN20ATuDPxIMbUEf6vX1PBSPGc48=</c2pa:manifest></metadata></svg>
