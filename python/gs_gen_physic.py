@@ -62,23 +62,31 @@ WHITHAM_K_T = 1.82
 B_MIN = 0.05            # m, lower bound on b in the N-wave laws (avoids the b -> 0 singularity)
 KG_Z_MAX = 40.0         # m/kg^(1/3), upper end of the published Kinney-Graham range
 
-# Projectiles: d = diameter (m), L = length (m), v0 = nominal muzzle velocity (m/s),
+# Projectiles: d = diameter (m), L = length (m), v0 = muzzle velocity (m/s),
 # lam = drag decay length (m) for drag_model = exponential: v(s) = v0 exp(-s / lam).
-# Nominal values; override with [bullet] diameter_mm, length_mm, muzzle_velocity_mps,
-# decay_length_m. v0 and lam match the BALLISTIC table of ana_sw_mb_range.py (the values
-# checked against the Cipatat recordings, Nov 2026); they are APPROXIMATE fits to typical
-# published velocity tables -- replace them with values from your own ballistic tables.
-# The list covers every small-arms calibre of the Cipatat development set (sound/Cipatat).
+# v0 and lam are COMPUTED from ammunition data (ammo_data.csv: muzzle velocity, G1/G7 ballistic
+# coefficient) by util_ballistic_library.py: standard drag tables, ICAO atmosphere (15 C,
+# 101.325 kPa), lam fitted to the time of flight while the bullet is above Mach 1.1 (max 2000 m).
+# resolve_bullet scales lam with the air density of [atmosphere]. Check ammo_data.csv against
+# your own ammunition tables (several inputs are approximate) and rerun the utility.
+# Override per run with [bullet] diameter_mm, length_mm, muzzle_velocity_mps, decay_length_m.
 BULLET_LIBRARY = {
-    "5.56_NATO":      dict(d=5.56e-3,  L=0.023,  v0=940.0, lam=950.0),    # 5.56x45 M855/SS109 (M16, MINIMI 5.56)
-    "7.62_NATO":      dict(d=7.82e-3,  L=0.028,  v0=850.0, lam=1050.0),   # 7.62x51 M80 ball (MINIMI 7.62, SM2)
-    "7.62x39":        dict(d=7.92e-3,  L=0.0268, v0=718.0, lam=860.0),    # M43 ball (AK47)
-    "7.62x54R":       dict(d=7.92e-3,  L=0.032,  v0=830.0, lam=1150.0),   # 7N1 / LPS (Dragunov)
-    "8.6x70":         dict(d=8.58e-3,  L=0.039,  v0=900.0, lam=2000.0),   # .338 Lapua Magnum 250 gr (AX338)
-    "12.7_NATO":      dict(d=12.95e-3, L=0.058,  v0=890.0, lam=2500.0),   # 12.7x99 M33 ball (STEYR HS50)
-    "9mm_Parabellum": dict(d=9.02e-3,  L=0.0155, v0=370.0, lam=400.0),    # 9x19, barely supersonic
+    "5.56_NATO":      dict(d=5.70e-3,  L=0.023,  v0=948.0, lam=765.0),    # 5.56x45 M855/SS109 (M16, MINIMI 5.56)
+    "7.62_NATO":      dict(d=7.82e-3,  L=0.0285, v0=838.0, lam=971.0),    # 7.62x51 M80 ball (MINIMI 7.62, SM2)
+    "7.62x39":        dict(d=7.92e-3,  L=0.0268, v0=718.0, lam=701.0),    # 57-N-231 / M43 ball (AK47)
+    "7.62x54R":       dict(d=7.92e-3,  L=0.032,  v0=823.0, lam=994.0),    # 7N1 (Dragunov)
+    "8.6x70":         dict(d=8.58e-3,  L=0.0394, v0=905.0, lam=1605.0),   # .338 Lapua Magnum 250 gr (AX338)
+    "12.7_NATO":      dict(d=12.95e-3, L=0.058,  v0=887.0, lam=1745.0),   # 12.7x99 M33 ball (STEYR HS50)
+    "9mm_Parabellum": dict(d=9.02e-3,  L=0.0155, v0=360.0, lam=430.0),    # 9x19 124 gr, barely supersonic
 }
+LAM_REF_T_C, LAM_REF_P_KPA = 15.0, 101.325   # atmosphere of the library's lam
 # Other names accepted for bullet.caliber
+# Project limits (project.md, "Project rules"). The 12.7x99 bullet itself measures 12.95 mm.
+PROJECT_MAX_RANGE_M = 2000.0
+PROJECT_MIN_RANGE_M = 50.0          # closer = friendly zone (allowed here, flagged by the detector)
+PROJECT_MAX_BULLET_DIAMETER_MM = 13.0
+PROJECT_MAX_RPM = 600.0             # bursts: rounds at least 100 ms apart
+
 BULLET_ALIASES = {"5.56x45": "5.56_NATO", "7.62x51": "7.62_NATO", "12.7x99": "12.7_NATO",
                   "9x19": "9mm_Parabellum", ".338_Lapua": "8.6x70", "338_Lapua": "8.6x70"}
 DRAG_MODELS = ("none", "exponential")
@@ -153,7 +161,7 @@ DEFAULTS = {
     "bullet":      {"caliber": "5.56_NATO", "mach": "2.5", "muzzle_velocity_mps": "0",
                     "diameter_mm": "0", "length_mm": "0", "drag_model": "none",
                     "decay_length_m": "0"},
-    "trajectory":  {"mode": "range_miss", "range": "200.0", "y_miss": "10.0",
+    "trajectory":  {"mode": "range_miss", "range": "200.0", "y_miss": "10.0", "shooter_height_m": "1.5",
                     "shooter_pos": "", "direction": "", "azimuth_deg": "0", "elevation_deg": "0"},
     "atmosphere":  {"enabled": "true", "temp_c": "20.0", "humidity_pct": "50.0",
                     "pressure_kpa": "101.325"},
@@ -161,9 +169,9 @@ DEFAULTS = {
     "shockwave":   {"mach_threshold": "1.1", "amp_scale": "1.0", "dur_scale": "1.0"},
     "muzzle_blast": {"w_g_tnt": "2.0", "amp_scale": "1.0", "dur_scale": "1.0"},
     "timing":      {"pre_roll": "0.010", "post_roll": "0.150"},
-    "ground":      {"enabled": "false", "array_height_m": "1.5",
+    "ground":      {"enabled": "false", "array_height_m": "2.0",
                     "reflection_coeff_sw": "0.7", "reflection_coeff_mb": "0.9"},
-    "noise":       {"model": "realistic", "noise_floor_pa": "0.005",
+    "noise":       {"model": "layers", "noise_floor_pa": "0.005",
                     "rt60": "1.25", "noise_rms_pa": "0.075", "noise_slope": "-2.4",
                     "layers": "colored", "level_mode": "absolute", "snr_db": "30.0",
                     "snr_ref": "shockwave"},
@@ -205,10 +213,26 @@ def _validate_config(cfg):
     need(t["mode"] in ("range_miss", "explicit"), "trajectory.mode must be 'range_miss' or 'explicit'")
     if t["mode"] == "explicit":
         need(t["shooter_pos"] is not None, "trajectory.mode = explicit needs shooter_pos")
+    # Project limits (project.md, "Project rules"): outdoor only, 50-2000 m, calibre <= 12.7 mm
+    need(t["shooter_height_m"] >= 0, "trajectory.shooter_height_m must be >= 0")
+    dist = (float(np.hypot(t["range"], t["y_miss"])) if t["mode"] == "range_miss"
+            else float(np.linalg.norm(np.asarray(t["shooter_pos"], dtype=float)[:2])))
+    need(dist <= PROJECT_MAX_RANGE_M, f"shooter distance {dist:.0f} m is beyond the project's "
+                                      f"{PROJECT_MAX_RANGE_M:.0f} m")
+    if dist < PROJECT_MIN_RANGE_M:
+        print(f"[config] NOTE: shooter distance {dist:.0f} m < {PROJECT_MIN_RANGE_M:.0f} m: inside the "
+              f"friendly zone (the detector flags such shots 'friendly')")
+    b_d = cfg["bullet"]["diameter_mm"]
+    need(b_d <= PROJECT_MAX_BULLET_DIAMETER_MM,
+         f"bullet.diameter_mm {b_d} is above the project's 12.7 mm calibre "
+         f"(bullet diameter <= {PROJECT_MAX_BULLET_DIAMETER_MM} mm)")
     need(cfg["timing"]["pre_roll"] >= 0 and cfg["timing"]["post_roll"] >= 0, "timing roll values must be >= 0")
     need(cfg["noise"]["rt60"] > 0, "noise.rt60 must be > 0")
     need(cfg["noise"]["model"] in ("simple", "realistic", "layers"),
          "noise.model must be 'simple', 'realistic' or 'layers'")
+    need(cfg["noise"]["model"] != "realistic" and "room" not in cfg["noise"]["layers"],
+         "the project is outdoor only: noise.model = realistic and the 'room' layer simulate an "
+         "enclosed space (use model = layers with echoes, colored, wind, ...)")
     need(cfg["noise"]["level_mode"] in ("absolute", "snr"), "noise.level_mode must be 'absolute' or 'snr'")
     need(cfg["noise"]["snr_ref"] in ("shockwave", "muzzle_blast", "peak"),
          "noise.snr_ref must be 'shockwave', 'muzzle_blast' or 'peak'")
@@ -341,6 +365,7 @@ def load_config(path, mic_config=None, components=None):
                        decay_length_m=cp.getfloat("bullet", "decay_length_m")),
         "trajectory": dict(mode=cp.get("trajectory", "mode").strip().lower(),
                            range=cp.getfloat("trajectory", "range"), y_miss=cp.getfloat("trajectory", "y_miss"),
+                           shooter_height_m=cp.getfloat("trajectory", "shooter_height_m"),
                            shooter_pos=opt_vec("trajectory", "shooter_pos"),
                            direction=opt_vec("trajectory", "direction"),
                            azimuth_deg=cp.getfloat("trajectory", "azimuth_deg"),
@@ -404,11 +429,15 @@ def build_mic_positions(cfg):
 def build_trajectory(cfg):
     """(shooter position = bullet origin, unit direction of the bullet).
 
-    range_miss: shooter at (-range, y_miss, 0), bullet along +x, array centroid at the origin.
+    range_miss: shooter at (-range, y_miss, shooter_height_m - array_height_m), bullet along +x
+                (horizontal), array centroid at the origin.
     explicit:   shooter_pos plus direction (vector) or azimuth/elevation (ENU, azimuth 0 = +x)."""
     t = cfg["trajectory"]
     if t["mode"] == "range_miss":
-        return np.array([-t["range"], t["y_miss"], 0.0]), np.array([1.0, 0.0, 0.0])
+        # the array centroid is at the origin, ground.array_height_m above the ground; the gun is
+        # trajectory.shooter_height_m above the ground (project defaults 2.0 m and 1.5 m)
+        z = t.get("shooter_height_m", 0.0) - cfg["ground"]["array_height_m"] if "ground" in cfg else 0.0
+        return np.array([-t["range"], t["y_miss"], z]), np.array([1.0, 0.0, 0.0])
     origin = np.asarray(t["shooter_pos"], dtype=float)
     if t["direction"] is not None:
         v = np.asarray(t["direction"], dtype=float)
@@ -425,7 +454,8 @@ def resolve_bullet(cfg, c):
     """(bullet parameters dict, Mach number). Speed priority: muzzle_velocity_mps, then mach,
     then the library's nominal v0. diameter_mm and length_mm override the library.
     The dict also carries 'drag' (drag model) and 'lam' (decay length, m; decay_length_m
-    overrides the library). With drag, the returned Mach is the MUZZLE Mach."""
+    overrides the library; the library value is scaled to the air density of [atmosphere]).
+    With drag, the returned Mach is the MUZZLE Mach."""
     name = cfg["bullet"]["caliber"].strip()
     name = BULLET_ALIASES.get(name, name)
     if name not in BULLET_LIBRARY:
@@ -439,7 +469,11 @@ def resolve_bullet(cfg, c):
         bl["L"] = b["length_mm"] * 1e-3
     bl["drag"] = b.get("drag_model", "none")
     if b.get("decay_length_m", 0) > 0:
-        bl["lam"] = b["decay_length_m"]
+        bl["lam"] = b["decay_length_m"]          # given by the user: used as is
+    elif "atmosphere" in cfg:
+        # library lam is for 15 C / 101.325 kPa; drag scales with air density
+        at = cfg["atmosphere"]
+        bl["lam"] *= ((at["temp_c"] + 273.15) / (LAM_REF_T_C + 273.15)) * (LAM_REF_P_KPA / at["pressure_kpa"])
     if b["muzzle_velocity_mps"] > 0:
         M = b["muzzle_velocity_mps"] / c
     elif b["mach"] > 0:

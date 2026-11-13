@@ -21,14 +21,15 @@ Noise models ([noise] model)
 ----------------------------
   simple     white noise of noise_floor_pa on each mic (unchanged)
   realistic  room reverb (rt60) + independent colored noise (noise_rms_pa, noise_slope) on each
-             mic (unchanged; kept for old configurations)
+             mic. REFUSED: the project is outdoor only (code kept for old configurations)
   layers     any combination of the layers below ([noise] layers = colored, wind, ...), each
              configured in its own [noise.<layer>] section
 
 Layers (model = layers)
 -----------------------
   Convolutive (applied to the Stage-1 signal):
-    room      diffuse reverberation tail: rt60, drr_db (direct-to-reverberant ratio)
+    room      diffuse reverberation tail: rt60, drr_db (direct-to-reverberant ratio). REFUSED:
+              the project is outdoor only (code kept for old configurations)
     echoes    a few discrete outdoor echoes (treeline, buildings): random (n, delay_ms range,
               gain range, lowpass_hz) or given (list = delay_ms, gain, azimuth, elevation; ...).
               Each echo arrives from its own direction (its own TDOAs).
@@ -507,8 +508,16 @@ def _reference_peak(gt, dry, ref):
     return float(np.mean(vals)), ref
 
 
+def _outdoor_only(noi):
+    """Project rule: outdoor only. 'realistic' and the 'room' layer simulate an enclosed space."""
+    if noi["model"] == "realistic" or (noi["model"] == "layers" and "room" in noi["layers"]):
+        raise ValueError("the project is outdoor only: noise.model = realistic and the 'room' layer "
+                         "simulate an enclosed space (use the echoes layer for outdoor reflections)")
+
+
 def apply_layers(ideal_signals, fs, cfg, gt, mic_pos, c):
     noi, seed = cfg["noise"], cfg["output"]["seed"]
+    _outdoor_only(noi)
     layers = noi["layers"]
     bad = [x for x in layers if x not in LAYERS]
     if bad:
@@ -576,6 +585,7 @@ def apply_noise(ideal_signals, t_master_len, fs, cfg, gt=None, mic_pos=None, c=3
     noi, out = cfg["noise"], cfg["output"]
     n_mics = len(ideal_signals)
     seed = out["seed"]
+    _outdoor_only(noi)
 
     if noi["model"] == "simple":
         rng_adc = np.random.default_rng(seed)

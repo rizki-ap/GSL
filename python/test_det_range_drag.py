@@ -6,7 +6,8 @@ Test-only use of the generator -- the detector itself never imports it."""
 import numpy as np
 from gs_gen_physic import shock_geometry_drag, BULLET_LIBRARY
 from gs_det_shooter_locator import fit_range_drag, pilar_v_exact, RANGE_DEFAULTS
-RCFG = {k: (float(v) if k not in ('model', 'default_caliber') else v) for k, v in RANGE_DEFAULTS.items()}
+RCFG = {k: (float(v) if k not in ('model', 'default_caliber', 'lam_temperature_scaling') else v)
+        for k, v in RANGE_DEFAULTS.items()}
 RCFG['n_grid'] = int(RCFG['n_grid'])
 
 C = 347.0
@@ -43,17 +44,23 @@ def solve(sc, v0, lam, n_err_deg=0.0, k_err_deg=0.0):
 def const_range(sc):
     theta = np.arccos(np.clip(np.dot(sc["k"], -sc["n"]), -1, 1))
     MA = 1 / np.cos(theta)
-    r = pilar_v_exact(sc["dt"], sc["b"], MA, C)       # given the TRUE miss distance
+    try:
+        r = pilar_v_exact(sc["dt"], sc["b"], MA, C)   # given the TRUE miss distance
+    except ValueError:                                # no constant-speed solution (near Mach 1)
+        return None
     return np.hypot(r, sc["b"])
 
 print(f"{'cal':10s} {'D':>5s} {'b':>4s} | {'M_emit':>6s} | {'drag, matched':>13s} {'miss est':>8s} | "
       f"{'lam -20%':>8s} {'lam +20%':>8s} {'v0 -3%':>7s} | {'1deg noise':>10s} | {'constant*':>9s}")
 for cal in ["5.56_NATO", "7.62_NATO", "12.7_NATO"]:
-    for D in [100, 200, 400, 600, 800]:
+    for D in [100, 200, 400, 600, 800, 1200, 2000]:      # project range: up to 2000 m
         for b in [5, 20]:
             sc = scenario(cal, D, b, 30)
             if sc is None:
                 print(f"{cal:10s} {D:5d} {b:4d} | no shockwave at the array"); continue
+            if sc["M"] < 1.1:     # the generator's shockwave.mach_threshold: no usable shockwave
+                print(f"{cal:10s} {D:5d} {b:4d} | {sc['M']:6.2f} | bullet below Mach 1.1 where the shock "
+                      f"is emitted: no usable shockwave (blast only: bearing, no range)"); continue
             def err(s): return f"{100 * (s['D'] - D) / D:+7.1f}%" if s else "   n/a "
             m, _ = solve(sc, sc["v0"], sc["lam"])
             lo, _ = solve(sc, sc["v0"], sc["lam"] * 0.8)
@@ -64,5 +71,6 @@ for cal in ["5.56_NATO", "7.62_NATO", "12.7_NATO"]:
             noise = f"{np.sqrt(np.mean(np.square(ne))):5.1f}% rms" if ne else "n/a"
             cr = const_range(sc)
             print(f"{cal:10s} {D:5d} {b:4d} | {sc['M']:6.2f} | {err(m):>13s} {m['miss'] if m else float('nan'):7.1f}m | "
-                  f"{err(lo):>8s} {err(hi):>8s} {err(vs):>7s} | {noise:>10s} | {100 * (cr - D) / D:+8.1f}%")
+                  f"{err(lo):>8s} {err(hi):>8s} {err(vs):>7s} | {noise:>10s} | "
+                  + (f"{100 * (cr - D) / D:+8.1f}%" if cr else "     n/a"))
 print("\n* constant-speed PILAR-V solve, angle-only Mach, given the TRUE miss distance (old Stage 3, best case)")

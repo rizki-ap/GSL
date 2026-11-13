@@ -65,6 +65,7 @@ Output
 import argparse
 import configparser
 import json
+import math
 import sys
 from datetime import datetime, timezone
 
@@ -275,6 +276,99 @@ def _parse_band(text):
 DETECTION_METHODS = ("classify", "threshold")
 
 
+# Calibre hierarchy (project rule, Nov 2026), from coarse to fine:
+#   category  small (< 7.62 mm), medium (7.62 to < 12.7 mm), big (12.7 to 40 mm), RPG, other
+#   class     the nominal bore number, covering all its variants: 5.56, 7.62, 8.6, 12.7, 20, ...
+#   variant   one [bullet_reference_library] entry: a cartridge with its own properties
+#             (d, L, v0, lam), e.g. 7.62x39, 7.62_NATO (7.62x51), 7.62x54R, 8.6x70 (.338 Lapua)
+CALIBER_CATEGORIES = ("small", "medium", "big", "RPG", "other")
+_RPG = r"rpg|(^|[^a-z])pg-?\d"
+
+
+def caliber_class_of(cal):
+    """Calibre class = nominal bore number from the name, before 'x', '_' or 'mm'
+    (5.56_NATO -> 5.56, 7.62x54R -> 7.62, 12,7 -> 12.7, 20mm -> 20); 'RPG' for any RPG round;
+    the name itself if it has no number. Override with <cal>_class."""
+    import re
+    if re.search(_RPG, cal, re.I):
+        return "RPG"
+    m = re.match(r"^\s*(\d+(?:[.,]\d+)?)", cal)                  # 12.7 or 12,7
+    return f"{float(m.group(1).replace(',', '.')):g}" if m else cal
+
+
+def caliber_category_of(cls):
+    """Category of a calibre class: small < 7.62 mm <= medium < 12.7 mm <= big <= 40 mm, RPG,
+    other (above 40 mm, or not a number). Override with <cal>_category."""
+    if cls == "RPG":
+        return "RPG"
+    try:
+        mm = float(cls)
+    except ValueError:
+        return "other"
+    return "small" if mm < 7.62 else "medium" if mm < 12.7 else "big" if mm <= 40.0 else "other"
+
+
+# ---------------------------------------------------------------- real-time timing and early report
+K_P_WHITHAM, K_T_WHITHAM = 0.53, 1.82
+
+
+def mb_deadline(library, mach_min, temp_c, max_range_m):
+    """Longest possible SW -> MB delay (s) for any calibre in the library, and per calibre.
+
+    Only bullets at >= mach_min where the shock is emitted make a shockwave (project rule). If
+    the shock reaching the array was emitted at s_e along the path, the shooter is at most
+    s_e + R away (R = emission point to array), so the delay is at most s_e/c - t_bullet(s_e)
+    whatever the miss distance. That grows with s_e, so the bound is at the point where the
+    bullet slows to mach_min (or the project's maximum range). lam is scaled to temp_c."""
+    c = 331.3 + 0.606 * temp_c
+    f_lam = (temp_c + 273.15) / 288.15
+    per = {}
+    for cal, bl in library.items():
+        v0, lam = bl.get("v0"), bl.get("lam")
+        if not v0 or v0 <= mach_min * c:
+            continue
+        if lam:
+            lam = lam * f_lam
+            s = min(max_range_m, lam * math.log(v0 / (mach_min * c)))
+            tb = lam * math.expm1(s / lam) / v0
+        else:
+            s, tb = max_range_m, max_range_m / v0
+        per[cal] = dict(delay_s=s / c - tb, supersonic_to_m=s)
+    worst = max((v["delay_s"] for v in per.values()), default=0.0)
+    return worst, per
+
+
+def sw_only_category(t_n_s, dp_pa, c, library, t_n_offset_s=0.0, mach_min=1.1,
+                     p_atm=101325.0, b_range=(0.5, 200.0), tol_log=0.1):
+    """Calibre category from the shockwave alone (no muzzle blast yet): the Whitham duration
+    and peak pressure, with the bullet's Mach unknown between mach_min and its muzzle Mach.
+    For each library variant and Mach the miss distance follows from the peak pressure; the
+    misfit is |ln(T_N predicted / T_N measured)|. Category = that of the best variant.
+    Returns dict(category, misfit, per_category misfits, ambiguous_with) or None."""
+    if not t_n_s or not dp_pa or t_n_s <= t_n_offset_s or dp_pa <= 0:
+        return None
+    tn = t_n_s - t_n_offset_s
+    best = {}
+    for cal, bl in library.items():
+        v0 = bl.get("v0")
+        if not v0 or v0 <= mach_min * c:
+            continue
+        M = np.linspace(mach_min, v0 / c, 60)
+        b = (K_P_WHITHAM * p_atm * (M ** 2 - 1) ** 0.125 * bl["d"] / (bl["L"] ** 0.25 * dp_pa)) ** (4.0 / 3.0)
+        ok = (b >= b_range[0]) & (b <= b_range[1])
+        if not ok.any():
+            continue
+        T = K_T_WHITHAM * M * bl["d"] * (b / bl["L"]) ** 0.25 / (c * (M ** 2 - 1) ** 0.375)
+        mis = float(np.min(np.abs(np.log(T[ok] / tn))))
+        cat = bl.get("cat", "other")
+        best[cat] = min(best.get(cat, np.inf), mis)
+    if not best:
+        return None
+    cat = min(best, key=best.get)
+    return dict(category=cat, misfit_log=best[cat], misfit_per_category=best,
+                ambiguous_with=[k for k, v in best.items() if k != cat and v - best[cat] < tol_log])
+
+
 def load_det_config(path, mic_config=None):
     """mic_config: installed-array preset name ([mic_config.<NAME>] section); None uses
     [geometry] mic_config."""
@@ -290,15 +384,21 @@ def load_det_config(path, mic_config=None):
                       "dt_min_s": "0.01", "dt_max_s": "5.0", "noise_window_s": "0.005",
                       "sw_band_hz": "1000,4000", "mb_bands_hz": "150,1000",
                       "sw_min_hf_snr_db": "25.0", "sw_min_crest_db": "14.0",
-                      "sw_max_rise_ms": "0.08", "sw_max_lf_width_ms": "0.0",
-                      "mb_min_lf_snr_db": "11.0", "mb_max_hf_excess_db": "10.0", "mb_min_prominence_db": "6.0",
-                      "mb_in_tail": "false"},
+                      "sw_max_rise_ms": "0.10", "sw_max_lf_width_ms": "0.0",
+                      "mb_min_lf_snr_db": "11.0", "mb_max_hf_excess_db": "12.0", "mb_min_prominence_db": "6.0",
+                      "mb_in_tail": "false", "supersonic_only": "true", "multi_shot": "true", "direction_gate_deg": "20.0",
+                      "pair_tol_ms": "8.0", "pair_tol_frac": "0.02", "min_dt_s": "0.030",
+                      "max_dt_s": "auto", "deadline_min_temp_c": "5.0", "deadline_margin": "0.05",
+                      "deadline_max_range_m": "2000.0", "sw_train_db": "12.0",
+                      "min_shot_interval_s": "0.090", "tail_hf_allowance_db": "3.0",
+                      "mb_tail_max_angle_deg": "75.0"},
         "tdoa": {"method": "xcorr", "interp_factor": "16",
                  "sw_window_pre_s": "0.003", "sw_window_post_s": "0.015",
                  "mb_window_pre_s": "0.006", "mb_window_post_s": "0.080", "max_lag_s": "0.001",
                  "xcorr_sw_band_hz": "1000,8000", "xcorr_mb_band_hz": "150,1000",
                  "xcorr_sw_window_pre_s": "0.0015", "xcorr_sw_window_post_s": "0.003",
-                 "xcorr_mb_window_pre_s": "0.005", "xcorr_mb_window_post_s": "0.030"},
+                 "xcorr_mb_window_pre_s": "0.005", "xcorr_mb_window_post_s": "0.030",
+                 "mb_closure_tol_s": "0.00005"},
         "bullet_reference_library": {"calibers": "5.56_NATO,7.62_NATO",
                                       "5.56_NATO_d": "0.0057", "5.56_NATO_L": "0.023", "5.56_NATO_v0": "940",
                                       "7.62_NATO_d": "0.00782", "7.62_NATO_L": "0.0285", "7.62_NATO_v0": "850"},
@@ -307,7 +407,7 @@ def load_det_config(path, mic_config=None):
                           "sweep_f0_hz": "40.0", "sweep_f1_hz": "20000.0",
                           "sweep_duration_s": "1.0", "rir_length_s": "2.0",
                           "regularization": "0.01"},
-        "output": {"basename": "det_result"},
+        "output": {"basename": "det_result", "report_caliber_class": "true"},
     })
     if path is not None:
         found = cp.read(path)
@@ -318,10 +418,21 @@ def load_det_config(path, mic_config=None):
     def _opt(cal, key):
         k = f"{cal}_{key}"
         return cp.getfloat("bullet_reference_library", k) if cp.has_option("bullet_reference_library", k) else None
+    def _cls(cal):
+        k = f"{cal}_class"
+        if cp.has_option("bullet_reference_library", k):
+            return cp.get("bullet_reference_library", k).strip()
+        return caliber_class_of(cal)
+
+    def _cat(cal):
+        k = f"{cal}_category"
+        if cp.has_option("bullet_reference_library", k):
+            return cp.get("bullet_reference_library", k).strip()
+        return caliber_category_of(_cls(cal))
     bullet_library = {
         cal: dict(d=cp.getfloat("bullet_reference_library", f"{cal}_d"),
                   L=cp.getfloat("bullet_reference_library", f"{cal}_L"),
-                  v0=_opt(cal, "v0"), lam=_opt(cal, "lam"))
+                  v0=_opt(cal, "v0"), lam=_opt(cal, "lam"), cls=_cls(cal), cat=_cat(cal))
         for cal in calibers
     }
 
@@ -332,7 +443,7 @@ def load_det_config(path, mic_config=None):
     fs_pa = (cp.getfloat("calibration", fs_key) if cp.has_option("calibration", fs_key)
              else cp.getfloat("calibration", "assumed_peak_pa_at_full_scale"))
 
-    return {
+    cfg = {
         "geometry": geometry,
         "physics": dict(speed_of_sound=cp.getfloat("physics", "speed_of_sound"),
                         atmospheric_pressure_pa=cp.getfloat("physics", "atmospheric_pressure_pa")),
@@ -348,6 +459,20 @@ def load_det_config(path, mic_config=None):
                            mb_max_hf_excess_db=cp.getfloat("detection", "mb_max_hf_excess_db"),
                            mb_min_prominence_db=cp.getfloat("detection", "mb_min_prominence_db"),
                            mb_in_tail=cp.getboolean("detection", "mb_in_tail"),
+                           supersonic_only=cp.getboolean("detection", "supersonic_only"),
+                           multi_shot=cp.getboolean("detection", "multi_shot"),
+                           direction_gate_deg=cp.getfloat("detection", "direction_gate_deg"),
+                           pair_tol_ms=cp.getfloat("detection", "pair_tol_ms"),
+                           pair_tol_frac=cp.getfloat("detection", "pair_tol_frac"),
+                           min_dt_s=cp.getfloat("detection", "min_dt_s"),
+                           max_dt_s=cp.get("detection", "max_dt_s").strip().lower(),
+                           deadline_min_temp_c=cp.getfloat("detection", "deadline_min_temp_c"),
+                           deadline_margin=cp.getfloat("detection", "deadline_margin"),
+                           deadline_max_range_m=cp.getfloat("detection", "deadline_max_range_m"),
+                           sw_train_db=cp.getfloat("detection", "sw_train_db"),
+                           min_shot_interval_s=cp.getfloat("detection", "min_shot_interval_s"),
+                           tail_hf_allowance_db=cp.getfloat("detection", "tail_hf_allowance_db"),
+                           mb_tail_max_angle_deg=cp.getfloat("detection", "mb_tail_max_angle_deg"),
                            sw_threshold_mult=cp.getfloat("detection", "sw_threshold_mult"),
                            mb_energy_threshold_mult=cp.getfloat("detection", "mb_energy_threshold_mult"),
                            dt_min_s=cp.getfloat("detection", "dt_min_s"),
@@ -360,6 +485,7 @@ def load_det_config(path, mic_config=None):
                      xcorr_sw_window_post_s=cp.getfloat("tdoa", "xcorr_sw_window_post_s"),
                      xcorr_mb_window_pre_s=cp.getfloat("tdoa", "xcorr_mb_window_pre_s"),
                      xcorr_mb_window_post_s=cp.getfloat("tdoa", "xcorr_mb_window_post_s"),
+                     mb_closure_tol_s=cp.getfloat("tdoa", "mb_closure_tol_s"),
                      interp_factor=cp.getint("tdoa", "interp_factor"),
                      sw_window_pre_s=cp.getfloat("tdoa", "sw_window_pre_s"),
                      sw_window_post_s=cp.getfloat("tdoa", "sw_window_post_s"),
@@ -367,7 +493,11 @@ def load_det_config(path, mic_config=None):
                      mb_window_post_s=cp.getfloat("tdoa", "mb_window_post_s"),
                      max_lag_s=cp.getfloat("tdoa", "max_lag_s")),
         "bullet_reference_library": bullet_library,
-        "calibration": dict(assumed_peak_pa_at_full_scale=fs_pa),
+        "calibration": dict(assumed_peak_pa_at_full_scale=fs_pa,
+                            t_n_offset_s=(cp.getfloat("range", "t_n_offset_s")
+                                          if cp.has_option("range", "t_n_offset_s") else 0.0),
+                            mach_min=(cp.getfloat("range", "mach_min")
+                                      if cp.has_option("range", "mach_min") else 1.1)),
         "deconvolution": dict(enabled=cp.getboolean("deconvolution", "enabled"),
                                calibration_wav=cp.get("deconvolution", "calibration_wav"),
                                sweep_f0_hz=cp.getfloat("deconvolution", "sweep_f0_hz"),
@@ -375,8 +505,24 @@ def load_det_config(path, mic_config=None):
                                sweep_duration_s=cp.getfloat("deconvolution", "sweep_duration_s"),
                                rir_length_s=cp.getfloat("deconvolution", "rir_length_s"),
                                regularization=cp.getfloat("deconvolution", "regularization")),
-        "output": dict(basename=cp.get("output", "basename")),
+        "output": dict(basename=cp.get("output", "basename"),
+                       report_caliber_class=cp.getboolean("output", "report_caliber_class")),
     }
+    det = cfg["detection"]
+    # [detection] max_dt_s = auto: the MB waiting deadline from the bullet library (see
+    # mb_deadline), at the coldest expected air (slower sound, more drag: the longest delay)
+    worst, per = mb_deadline(bullet_library, cfg["calibration"]["mach_min"],
+                             det["deadline_min_temp_c"], det["deadline_max_range_m"])
+    det["deadline_by_caliber"] = per
+    if det["max_dt_s"] == "auto":
+        det["max_dt_s"] = worst * (1.0 + det["deadline_margin"]) if worst > 0 else 5.0
+        det["max_dt_source"] = (f"auto: longest SW->MB delay {worst:.3f} s (bullet library, "
+                                f"{det['deadline_min_temp_c']:g} C, Mach >= {cfg['calibration']['mach_min']:g}) "
+                                f"+ {100 * det['deadline_margin']:g} %")
+    else:
+        det["max_dt_s"] = float(det["max_dt_s"])
+        det["max_dt_source"] = "[detection] max_dt_s"
+    return cfg
 
 
 def make_tetrahedron(edge_length):
@@ -523,14 +669,10 @@ def _jsonable(d):
     return out
 
 
-def classify_channels(normalized, t_axis, fs, cfg, noise_window_s):
-    """[detection] method = classify: array-level SW/MB classification (gs_det_events),
-    then each channel's onset/amplitude refined around the array-level event.
-    Returns (per_channel list in the same format as the threshold method, array summary)."""
+def refine_channels(normalized, t_axis, fs, cfg, noise_window_s, ev):
+    """Per-channel onsets/amplitudes around one array-level event ev (t_sw, sw_idx, t_mb, mb_idx,
+    mb_band), in the per_channel format of the threshold method."""
     det = cfg["detection"]
-    params = {k: det[k] for k in gs_det_events.DEFAULT_PARAMS}
-    x = np.stack(normalized, axis=1)
-    ev = gs_det_events.detect_sw_mb(x, fs, params)
     max_tdoa = cfg["geometry"]["aperture_m"] / cfg["physics"]["speed_of_sound"]
 
     per_channel = []
@@ -547,10 +689,13 @@ def classify_channels(normalized, t_axis, fs, cfg, noise_window_s):
             k = k + int(np.argmax(np.abs(sig[k:k + r])))
             win_end = min(len(sig) - 1, k + int(0.010 * fs))
             sw_win = sig[k:win_end]
-            zc = np.where(np.diff(np.sign(sw_win)))[0]
+            # T_N: front to rear shock, sub-sample (gs_det_events.nwave_duration). The earlier
+            # 2 x (peak -> first zero crossing) in whole samples came out 20-40 % short on
+            # Cipatat (156 us where 220-270 us are measured), which picked the wrong calibre.
+            t_n = gs_det_events.nwave_duration(sig, fs, k)
             ch.update(sw_detected=True, t_sw=float(t_axis[k]),
                       dP_sw=float(sw_win[0]) if len(sw_win) else None,
-                      T_N=float(2.0 * (t_axis[k + zc[0]] - t_axis[k])) if len(zc) else None)
+                      T_N=t_n if np.isfinite(t_n) else None)
         if ev["t_mb"] is not None:
             # search back as far as the array-level onset lies before its peak (+ max TDOA)
             back = (ev["mb_idx"] / fs - ev["t_mb"]) + max_tdoa + 0.002
@@ -560,6 +705,18 @@ def classify_channels(normalized, t_axis, fs, cfg, noise_window_s):
             ch.update(mb_detected=True, mb_reliable=True, t_mb=float(t_axis[k]),
                       dP_mb=float(mb_win.max()) if len(mb_win) else None)
         per_channel.append(ch)
+    return per_channel
+
+
+def classify_channels(normalized, t_axis, fs, cfg, noise_window_s):
+    """[detection] method = classify: array-level SW/MB classification (gs_det_events),
+    then each channel's onset/amplitude refined around the array-level event.
+    Returns (per_channel list in the same format as the threshold method, array summary)."""
+    det = cfg["detection"]
+    params = {k: det[k] for k in gs_det_events.DEFAULT_PARAMS}
+    x = np.stack(normalized, axis=1)
+    ev = gs_det_events.detect_sw_mb(x, fs, params)
+    per_channel = refine_channels(normalized, t_axis, fs, cfg, noise_window_s, ev)
 
     summary = dict(
         event_class=ev["event_class"], t_sw_s=ev["t_sw"], t_mb_s=ev["t_mb"],
@@ -573,6 +730,30 @@ def classify_channels(normalized, t_axis, fs, cfg, noise_window_s):
                 for e in ev["events"] if e["cls"] not in ("-", "SW-tail")],
     )
     return per_channel, summary
+
+
+def classify_shots(normalized, t_axis, fs, cfg, noise_window_s, mic_pos):
+    """[detection] multi_shot: every shot in the recording (gs_det_events.detect_shots: SW
+    pairing by the common SW -> MB delay, direction gate for echoes), each with its own
+    per-channel detections. Returns (list of shot dicts, summary of the shot detection)."""
+    det = cfg["detection"]
+    keys = list(gs_det_events.DEFAULT_PARAMS) + list(gs_det_events.SHOT_DEFAULTS)
+    params = {k: det[k] for k in keys if k in det}
+    x = np.stack(normalized, axis=1)
+    res = gs_det_events.detect_shots(x, fs, params, mic_pos=mic_pos, c=cfg["physics"]["speed_of_sound"])
+    shots = []
+    for k, sh in enumerate(res["shots"]):
+        pc = refine_channels(normalized, t_axis, fs, cfg, noise_window_s, sh)
+        shots.append(dict(index=k + 1, event_class=sh["event_class"], t_sw_s=sh["t_sw"], t_mb_s=sh["t_mb"],
+                          dt_sw_to_mb_s=sh["dt_s"], paired=sh["paired"],
+                          mb_band_hz=list(sh["mb_band"]) if sh["mb_band"] else None,
+                          mb_direction=sh["mb_direction"], sw_direction=sh["sw_direction"],
+                          angle_to_shooter_deg=sh["angle_to_shooter_deg"],
+                          direction_inconsistent=sh["direction_inconsistent"], echo_risk=sh["echo_risk"],
+                          per_channel=pc))
+    summary = dict(n_shots=len(shots), dt_common_s=res["dt_common_s"], echo_rejection=res["echo_rejection"],
+                   shooter_direction=res["shooter_direction"], rejected_candidates=[_jsonable(q) for q in res["rejected"]])
+    return shots, summary
 
 
 def main():
@@ -670,8 +851,25 @@ def main():
     array_summary = None
     per_channel = []
     t_sw_all = []
+    shots, shot_summary = [], None
+    if det["method"] == "classify" and det["multi_shot"]:
+        shots, shot_summary = classify_shots(normalized, t_axis, fs, cfg, det["noise_window_s"],
+                                             build_mic_positions(cfg))
+        f = lambda v: "--" if v is None else f"{v:.5f}s"
+        print(f"[Det Stage 1] {len(shots)} shot(s), echoes rejected by {shot_summary['echo_rejection']}"
+              + (f", common SW->MB delay {shot_summary['dt_common_s'] * 1e3:.1f} ms" if shot_summary["dt_common_s"] else ""))
+        for sh in shots:
+            flags = (" (direction inconsistent)" if sh["direction_inconsistent"] else "") + \
+                    (" (possible echo: no array direction)" if sh["echo_risk"] else "")
+            print(f"  shot {sh['index']}: {sh['event_class']:7s} SW {f(sh['t_sw_s'])}  MB {f(sh['t_mb_s'])}{flags}")
     if det["method"] == "classify":
         per_channel, array_summary = classify_channels(normalized, t_axis, fs, cfg, det["noise_window_s"])
+        if shots:      # the first shot is the main event (detect_sw_mb can pair across rounds)
+            per_channel = shots[0]["per_channel"]
+            s0 = shots[0]
+            array_summary.update(event_class=s0["event_class"], t_sw_s=s0["t_sw_s"], t_mb_s=s0["t_mb_s"],
+                                 dt_sw_to_mb_s=s0["dt_sw_to_mb_s"], mb_band_hz=s0["mb_band_hz"],
+                                 n_sw_in_burst=sum(1 for q in shots if q["t_sw_s"] is not None))
         a = array_summary
         f = lambda v: "--" if v is None else f"{v:.5f}s"
         print(f"[Det Stage 1] Array events: {a['event_class']}  (SW {f(a['t_sw_s'])}, MB {f(a['t_mb_s'])}"
@@ -683,6 +881,68 @@ def main():
         for ch in per_channel:
             print(f"  Ch{ch['channel']}: t_sw={f(ch['t_sw'])}  t_mb={f(ch['t_mb'])}")
             t_sw_all.append(ch["t_sw"])
+    # Project rule: only supersonic bullets (Mach >= 1.1, i.e. with a shockwave) are detections.
+    # A muzzle blast without a shockwave (subsonic round, a bullet already below Mach 1.1, or the
+    # array outside the Mach cone) is listed in blast_only_events, not reported as a shot.
+    blast_only = []
+    if det["method"] == "classify" and det["supersonic_only"]:
+        blast_only = [dict(t_mb_s=q["t_mb_s"], mb_direction=q.get("mb_direction")) for q in shots
+                      if q["t_sw_s"] is None]
+        shots = [q for q in shots if q["t_sw_s"] is not None]
+        for k, q in enumerate(shots):
+            q["index"] = k + 1
+        if array_summary and array_summary["event_class"] == "MB only":
+            if not blast_only:
+                blast_only = [dict(t_mb_s=array_summary["t_mb_s"], mb_direction=None)]
+            array_summary.update(event_class="none", t_mb_s=None, dt_sw_to_mb_s=None)
+            for ch in per_channel:
+                ch.update(mb_detected=False, mb_reliable=False, t_mb=None, dP_mb=None)
+        if shots and array_summary and array_summary["event_class"] != "none":
+            s0 = shots[0]       # the main event is the first supersonic shot
+            per_channel = s0["per_channel"]
+            array_summary.update(event_class=s0["event_class"], t_sw_s=s0["t_sw_s"], t_mb_s=s0["t_mb_s"],
+                                 dt_sw_to_mb_s=s0["dt_sw_to_mb_s"], mb_band_hz=s0["mb_band_hz"])
+        if blast_only:
+            print(f"[Det Stage 1] {len(blast_only)} muzzle blast(s) without a shockwave not reported "
+                  f"(supersonic_only: Mach >= 1.1 bullets only) at "
+                  + ", ".join(f"{b['t_mb_s']:.4f}s" for b in blast_only if b["t_mb_s"] is not None))
+        if not shots and (not array_summary or array_summary["event_class"] == "none"):
+            print("[Det Stage 1] No supersonic shot detected.")
+
+    # Real-time timing (offline here, but reported as it would happen live): when a SW arrives,
+    # an early report is due at once (supersonic shot, SW direction, calibre category from the
+    # SW alone); the MB is searched until the deadline t_sw + max_dt_s; then the final report.
+    fs_pa = cfg["calibration"]["assumed_peak_pa_at_full_scale"]
+    mb_win = cfg["tdoa"]["xcorr_mb_window_post_s"]
+    for q in shots:
+        if q["t_sw_s"] is None:
+            continue
+        sw_ch = [ch for ch in q["per_channel"] if ch.get("sw_detected")]
+        tns = [ch["T_N"] for ch in sw_ch if ch.get("T_N")]
+        dps = [abs(ch["dP_sw"]) for ch in sw_ch if ch.get("dP_sw")]
+        t_n = float(np.median(tns)) if tns else None
+        dp_pa = float(np.median(dps)) * peak * fs_pa if dps else None
+        cat = sw_only_category(t_n, dp_pa, cfg["physics"]["speed_of_sound"], cfg["bullet_reference_library"],
+                               cfg["calibration"]["t_n_offset_s"], cfg["calibration"]["mach_min"],
+                               cfg["physics"]["atmospheric_pressure_pa"])
+        deadline = q["t_sw_s"] + det["max_dt_s"]
+        q["early_report"] = dict(
+            t_report_s=q["t_sw_s"], sw_direction=q.get("sw_direction"),
+            sw_t_n_s=t_n, sw_peak_pa=dp_pa,
+            caliber_category_sw_only=cat["category"] if cat else None,
+            caliber_category_sw_only_misfit=cat["misfit_log"] if cat else None,
+            caliber_category_sw_only_ambiguous_with=cat["ambiguous_with"] if cat else None,
+            mb_deadline_s=deadline)
+        q["t_final_report_s"] = (q["t_mb_s"] + mb_win) if q["t_mb_s"] is not None else deadline + mb_win
+        f = lambda v: "--" if v is None else f"{v:.3f}"
+        print(f"  shot {q['index']} early report at {q['t_sw_s']:.3f}s: supersonic, category (SW only) "
+              f"{cat['category'] if cat else '--'}"
+              + (f" (also possible: {', '.join(cat['ambiguous_with'])})" if cat and cat['ambiguous_with'] else "")
+              + f"; MB deadline {deadline:.3f}s; final report at {f(q['t_final_report_s'])}s"
+              + ("" if q["t_mb_s"] is not None else " (SW only)"))
+    if det["method"] == "classify":
+        print(f"[Det Stage 1] MB waiting deadline: {det['max_dt_s']:.3f} s after the SW ({det['max_dt_source']})")
+
     for i in (range(n_channels) if det["method"] == "threshold" else []):
         result = detect_events(normalized[i], t_axis, fs,
                                 det["sw_threshold_mult"], det["mb_energy_threshold_mult"],
@@ -732,6 +992,14 @@ def main():
                      ("SW+MB" if any(c.get("mb_detected") and c.get("mb_reliable") for c in per_channel)
                       else "SW only") if any(c.get("sw_detected") for c in per_channel) else "none"),
         array_events=array_summary,
+        n_shots=max(1, len(shots)) if shots else (0 if not per_channel else 1),
+        shot_detection=shot_summary,
+        shots=shots,
+        supersonic_only=bool(det.get("supersonic_only")),
+        mb_deadline_after_sw_s=det["max_dt_s"],
+        mb_deadline_source=det["max_dt_source"],
+        early_report=(shots[0].get("early_report") if shots else None),
+        blast_only_events=blast_only,
         config_used=cfg,
         per_channel=per_channel,
     )

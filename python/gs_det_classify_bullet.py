@@ -175,6 +175,8 @@ def main():
         print("[Det Stage 4] No shockwave TDOA available (blast-only event) -- classification needs "
               "the shockwave. Aborting.")
         result["classification_available"] = False
+        result["best_guess_caliber_category"] = None
+        result["best_guess_caliber_category_reason"] = "no shockwave: muzzle blast only"
         with open(f"{cfg['output']['basename']}_classification.json", "w") as f:
             json.dump(result, f, indent=2)
         return
@@ -185,6 +187,8 @@ def main():
         print("[Det Stage 4] No muzzle-blast TDOA available -- classification needs bearing, "
               "which needs MB TDOA. Aborting.")
         result["classification_available"] = False
+        result["best_guess_caliber_category"] = None
+        result["best_guess_caliber_category_reason"] = "no muzzle blast: no bearing"
         with open(f"{cfg['output']['basename']}_classification.json", "w") as f:
             json.dump(result, f, indent=2)
         return
@@ -237,10 +241,17 @@ def main():
         # Calibers of similar d^(4/3) / L^(1/3) (the 7.62 family, .338) are hard to tell
         # apart, so don't oversell this as a validated classifier (see module docstring).
         best_cal = min(valid_calibers, key=lambda k: abs(valid_calibers[k]["duration_misfit_db"]))
-        result["best_guess_caliber"] = best_cal
-        print(f"[Det Stage 4] Best-guess caliber: {best_cal}")
+        # Reported calibre (project rule): category mandatory, class optional
+        # ([output] report_caliber_class), variant not reported (only in caliber_candidates).
+        best_cls = cfg["bullet_reference_library"][best_cal].get("cls", best_cal)
+        best_cat = cfg["bullet_reference_library"][best_cal].get("cat", "other")
+        result["best_guess_caliber_category"] = best_cat
+        if cfg["output"]["report_caliber_class"]:
+            result["best_guess_caliber_class"] = best_cls
+        print(f"[Det Stage 4] Best-guess calibre category: {best_cat} (class {best_cls})")
     else:
-        result["best_guess_caliber"] = None
+        result["best_guess_caliber_category"] = None
+        result["best_guess_caliber_category_reason"] = "no calibre produced a valid solution"
         print("[Det Stage 4] No caliber produced a valid solution.")
 
     out_json = f"{cfg['output']['basename']}_classification.json"

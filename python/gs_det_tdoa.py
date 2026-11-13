@@ -34,6 +34,9 @@ Usage
   python gs_det_tdoa.py det_result_prepared.json -mic_config=UMA8   # normally not needed
 
 -mic_config defaults to the preset recorded by Stage 1 in *_prepared.json.
+
+Several shots (Stage 1 [detection] multi_shot): the TDOAs are computed for every shot and
+written to 'shots' in *_tdoa.json; the top-level fields are those of the first shot.
   python gs_det_tdoa.py det_result_prepared.json --method gcc_phat   # the original method
 """
 
@@ -125,6 +128,105 @@ def pick_reference_channel(per_channel):
     return min(candidates, key=lambda c: c["channel"])
 
 
+def _median_tn(per_channel):
+    """Median N-wave duration over the channels that measured one (s), or None."""
+    v = [c["T_N"] for c in per_channel if c.get("sw_detected") and c.get("T_N")]
+    return float(np.median(v)) if v else None
+
+
+def tdoa_one_shot(per_channel, ctx, verbose=True):
+    """TDOAs of one shot from its Stage-1 per-channel detections. Returns a dict (reference
+    channel, tdoa_sw_s, tdoa_mb_s, dt_sw_to_mb_s, amplitudes, T_N, consistency) or None."""
+    signals, t_axis, fs, tw = ctx["signals"], ctx["t_axis"], ctx["fs"], ctx["tw"]
+    method, use_peak_timing, max_lag = ctx["method"], ctx["use_peak_timing"], ctx["max_lag"]
+    n_channels = len(signals)
+    ref = pick_reference_channel(per_channel)
+    if ref is None:
+        return None
+    ref_ch = ref["channel"]
+    sw_used = bool(ref.get("sw_detected"))
+    mb_used = bool(ref.get("mb_detected") and ref.get("mb_reliable"))
+    if verbose:
+        t_sw_txt = f"{ref['t_sw']:.5f}s" if sw_used else "none"
+        print(f"[Det Stage 2] Reference channel: {ref_ch} (t_sw={t_sw_txt}, mb_reliable={ref.get('mb_reliable')})")
+
+    def band_signals(key, band):
+        if key not in ctx["cache"]:
+            ctx["cache"][key] = [bandpass(s, fs, band) for s in signals]
+        return ctx["cache"][key]
+
+    pairs = list(combinations(range(n_channels), 2))
+
+    def one(kind, t_ref, post=None):
+        out = {}
+        xpost = tw[f"xcorr_{kind}_window_post_s"] if post is None else post
+        if method == "xcorr" and not use_peak_timing:
+            sig = band_signals(kind, tw[f"xcorr_{kind}_band_hz"])
+        for (a, b) in pairs:
+            if use_peak_timing:
+                ta = per_channel[a].get(f"t_{kind}") if per_channel[a].get(f"{kind}_detected") else t_ref
+                tb = per_channel[b].get(f"t_{kind}") if per_channel[b].get(f"{kind}_detected") else t_ref
+                lo, hi = (-0.0001, 0.0005) if kind == "sw" else (0.0005, 0.003)
+                tau = peak_timing_tdoa(signals[a], signals[b], t_axis, ta, tb, fs,
+                                       search_start_s=lo, search_end_s=hi)
+            elif method == "xcorr":
+                wa = extract_window(sig[a], t_axis, t_ref, tw[f"xcorr_{kind}_window_pre_s"], xpost)
+                wb = extract_window(sig[b], t_axis, t_ref, tw[f"xcorr_{kind}_window_pre_s"], xpost)
+                tau = xcorr_tdoa(wa, wb, fs, interp_factor=tw["interp_factor"], max_lag_s=max_lag)
+            else:
+                wa = extract_window(signals[a], t_axis, t_ref, tw[f"{kind}_window_pre_s"], tw[f"{kind}_window_post_s"])
+                wb = extract_window(signals[b], t_axis, t_ref, tw[f"{kind}_window_pre_s"], tw[f"{kind}_window_post_s"])
+                tau = gcc_phat(wa, wb, fs, interp_factor=tw["interp_factor"], max_lag_s=max_lag)
+            out[f"{a},{b}"] = tau
+        return out
+
+    tdoa_sw = one("sw", ref["t_sw"]) if sw_used else {}
+    def closure(td):
+        return {f"{a},{b}": float(td.get(f"{a},{b}", 0) - (td.get(f"0,{b}", 0) - td.get(f"0,{a}", 0)))
+                for (a, b) in (pairs if td else []) if a != 0}
+
+    def worst(td):
+        return max((abs(v) for v in closure(td).values()), default=0.0)
+
+    tdoa_mb = one("mb", ref["t_mb"]) if mb_used else {}
+    mb_post_used = tw.get("xcorr_mb_window_post_s")
+    # The MB window is long (it must hold the blast's negative phase and ground reflection), so
+    # another event can fall into it: in a burst, the SW or an echo of a later round. Then the
+    # pair TDOAs stop adding up. Retry with shorter windows and keep the most consistent set.
+    tol = tw.get("mb_closure_tol_s", 0.0)
+    if tdoa_mb and method == "xcorr" and not use_peak_timing and tol > 0 and worst(tdoa_mb) > tol:
+        full = tw["xcorr_mb_window_post_s"]
+        best = (worst(tdoa_mb), full, tdoa_mb)
+        for frac in (0.5, 0.25):
+            td = one("mb", ref["t_mb"], post=full * frac)
+            if worst(td) < best[0]:
+                best = (worst(td), full * frac, td)
+        if verbose:
+            print(f"[Det Stage 2] MB pair TDOAs inconsistent ({worst(tdoa_mb)*1e6:.0f} us); "
+                  f"MB window {best[1]*1e3:.1f} ms used ({best[0]*1e6:.0f} us)")
+        tdoa_mb, mb_post_used = best[2], best[1]
+    if verbose:
+        if not mb_used:
+            print("[Det Stage 2] WARNING: reference channel's MB detection wasn't reliable -- "
+                  "skipping MB TDOA (would be meaningless windowed around a bad onset guess).")
+        if not sw_used:
+            print("[Det Stage 2] No shockwave detected -- MB TDOA only (bearing, no range).")
+        for name, td in (("SW", tdoa_sw), ("MB", tdoa_mb)):
+            if td:
+                print(f"{name} TDOA (us):")
+                for k, v in td.items():
+                    print(f"  ({k}): {v*1e6:+.3f}")
+    # Consistency check: tau(1,2) should ~= tau(0,2)-tau(0,1), etc. Reported, not corrected.
+    consistency_sw, consistency_mb = closure(tdoa_sw), closure(tdoa_mb)
+    return dict(reference_channel=ref_ch, sw_available=bool(tdoa_sw), mb_available=bool(tdoa_mb),
+                dt_sw_to_mb_s=(ref["t_mb"] - ref["t_sw"]) if (mb_used and sw_used) else None,
+                dp_sw_ref_channel=ref.get("dP_sw"), t_n_sw_ref_channel=ref.get("T_N"),
+                t_n_sw_median=_median_tn(per_channel),
+                dp_mb_ref_channel=ref.get("dP_mb"), tdoa_sw_s=tdoa_sw, tdoa_mb_s=tdoa_mb,
+                sw_consistency_residual_s=consistency_sw, mb_consistency_residual_s=consistency_mb,
+                mb_window_post_s=mb_post_used)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description="Detection Stage 2: TDOA for all C(N,2) mic pairs (SW and MB).")
@@ -156,24 +258,12 @@ def main():
     signals = [data[:, i].astype(np.float64) for i in range(n_channels)]
     t_axis = np.arange(len(signals[0])) / fs
 
-    ref = pick_reference_channel(prep["per_channel"])
-    if ref is None:
-        raise SystemExit("[Det Stage 2] No shockwave or muzzle blast was detected in Stage 1 "
-                         f"(event_class = {prep.get('event_class')}) -- nothing to compute TDOA on.")
-    ref_ch = ref["channel"]
-    sw_used = bool(ref.get("sw_detected"))
-    t_sw_txt = f"{ref['t_sw']:.5f}s" if sw_used else "none"
-    print(f"[Det Stage 2] Reference channel: {ref_ch} "
-          f"(t_sw={t_sw_txt}, mb_reliable={ref.get('mb_reliable')}, "
-          f"events: {prep.get('event_class', 'n/a')})")
-
     tw = cfg["tdoa"]
     # the lag search must cover the array's largest possible delay (PILAR-V: 0.356 m -> ~1.04 ms,
     # more than the 1 ms default max_lag_s)
     max_lag = max(tw["max_lag_s"], 1.1 * cfg["geometry"]["aperture_m"] / cfg["physics"]["speed_of_sound"])
     if max_lag > tw["max_lag_s"]:
         print(f"[Det Stage 2] max_lag_s raised to {max_lag * 1e3:.2f} ms to cover the array aperture")
-    pairs = list(combinations(range(n_channels), 2))
     use_peak_timing = prep.get("deconvolution_applied", False)
     method = (args.method or tw.get("method", "xcorr")).replace("-", "_")
     if method not in ("xcorr", "gcc_phat"):
@@ -181,86 +271,32 @@ def main():
     method_label = ("peak-timing (deconvolved signal)" if use_peak_timing else
                     "cross-correlation of the band-passed event" if method == "xcorr" else "GCC-PHAT")
     print(f"[Det Stage 2] TDOA method: {method_label}")
-    if method == "xcorr" and not use_peak_timing:
-        sig_sw = [bandpass(s, fs, tw["xcorr_sw_band_hz"]) for s in signals] if sw_used else None
-        mb_ok = ref.get("mb_detected") and ref.get("mb_reliable")
-        sig_mb = [bandpass(s, fs, tw["xcorr_mb_band_hz"]) for s in signals] if mb_ok else None
+    ctx = dict(signals=signals, t_axis=t_axis, fs=fs, tw=tw, method=method,
+               use_peak_timing=use_peak_timing, max_lag=max_lag, cache={})
 
-    tdoa_sw = {}
-    for (a, b) in (pairs if sw_used else []):
-        if use_peak_timing:
-            ch_a = prep["per_channel"][a]
-            ch_b = prep["per_channel"][b]
-            t_sw_a = ch_a.get("t_sw") if ch_a.get("sw_detected") else ref["t_sw"]
-            t_sw_b = ch_b.get("t_sw") if ch_b.get("sw_detected") else ref["t_sw"]
-            tau = peak_timing_tdoa(signals[a], signals[b], t_axis,
-                                    t_sw_a, t_sw_b, fs,
-                                    search_start_s=-0.0001, search_end_s=0.0005)
-        elif method == "xcorr":
-            wa = extract_window(sig_sw[a], t_axis, ref["t_sw"], tw["xcorr_sw_window_pre_s"], tw["xcorr_sw_window_post_s"])
-            wb = extract_window(sig_sw[b], t_axis, ref["t_sw"], tw["xcorr_sw_window_pre_s"], tw["xcorr_sw_window_post_s"])
-            tau = xcorr_tdoa(wa, wb, fs, interp_factor=tw["interp_factor"], max_lag_s=max_lag)
-        else:
-            sw_wins_a = extract_window(signals[a], t_axis, ref["t_sw"],
-                                        tw["sw_window_pre_s"], tw["sw_window_post_s"])
-            sw_wins_b = extract_window(signals[b], t_axis, ref["t_sw"],
-                                        tw["sw_window_pre_s"], tw["sw_window_post_s"])
-            tau = gcc_phat(sw_wins_a, sw_wins_b, fs,
-                            interp_factor=tw["interp_factor"], max_lag_s=max_lag)
-        tdoa_sw[f"{a},{b}"] = tau
+    main_shot = tdoa_one_shot(prep["per_channel"], ctx, verbose=True)
+    if main_shot is None:
+        raise SystemExit("[Det Stage 2] No shot was detected in Stage 1 "
+                         f"(event_class = {prep.get('event_class')}"
+                         + (f"; {len(prep.get('blast_only_events') or [])} blast(s) without a shockwave "
+                            "not reported: supersonic_only" if prep.get("blast_only_events") else "")
+                         + ") -- nothing to compute TDOA on.")
+    ref_ch = main_shot["reference_channel"]
+    tdoa_sw, tdoa_mb = main_shot["tdoa_sw_s"], main_shot["tdoa_mb_s"]
 
-    tdoa_mb = {}
-    mb_used = ref.get("mb_detected") and ref.get("mb_reliable")
-    if mb_used:
-        for (a, b) in pairs:
-            if use_peak_timing:
-                ch_a = prep["per_channel"][a]
-                ch_b = prep["per_channel"][b]
-                t_mb_a = ch_a.get("t_mb") if ch_a.get("mb_detected") else ref["t_mb"]
-                t_mb_b = ch_b.get("t_mb") if ch_b.get("mb_detected") else ref["t_mb"]
-                # MB: search from 0.5ms to 3ms AFTER onset -- the Friedlander peak
-                # arrives after the onset threshold crossing, not right at it.
-                tau = peak_timing_tdoa(signals[a], signals[b], t_axis,
-                                        t_mb_a, t_mb_b, fs,
-                                        search_start_s=0.0005, search_end_s=0.003)
-            elif method == "xcorr":
-                wa = extract_window(sig_mb[a], t_axis, ref["t_mb"], tw["xcorr_mb_window_pre_s"], tw["xcorr_mb_window_post_s"])
-                wb = extract_window(sig_mb[b], t_axis, ref["t_mb"], tw["xcorr_mb_window_pre_s"], tw["xcorr_mb_window_post_s"])
-                tau = xcorr_tdoa(wa, wb, fs, interp_factor=tw["interp_factor"], max_lag_s=max_lag)
-            else:
-                mb_wins_a = extract_window(signals[a], t_axis, ref["t_mb"],
-                                            tw["mb_window_pre_s"], tw["mb_window_post_s"])
-                mb_wins_b = extract_window(signals[b], t_axis, ref["t_mb"],
-                                            tw["mb_window_pre_s"], tw["mb_window_post_s"])
-                tau = gcc_phat(mb_wins_a, mb_wins_b, fs,
-                                interp_factor=tw["interp_factor"], max_lag_s=max_lag)
-            tdoa_mb[f"{a},{b}"] = tau
-    else:
-        print("[Det Stage 2] WARNING: reference channel's MB detection wasn't reliable -- "
-              "skipping MB TDOA (would be meaningless windowed around a bad onset guess).")
-    if not sw_used:
-        print("[Det Stage 2] No shockwave detected -- MB TDOA only (bearing, no range).")
-    if tdoa_sw:
-        print("SW TDOA (us):")
-    for k, v in tdoa_sw.items():
-        print(f"  ({k}): {v*1e6:+.3f}")
-    if tdoa_mb:
-        print("MB TDOA (us):")
-        for k, v in tdoa_mb.items():
-            print(f"  ({k}): {v*1e6:+.3f}")
-
-    # Consistency check: for a truly consistent set, tau(1,2) should ~= tau(0,2)-tau(0,1), etc.
-    # Reported for transparency, not used to "correct" anything.
-    consistency_sw = {}
-    for (a, b) in (pairs if tdoa_sw else []):
-        if a == 0:
+    # several shots (Stage 1 [detection] multi_shot): the same for every shot
+    shots_out = []
+    for k, sh in enumerate(prep.get("shots") or []):
+        r = tdoa_one_shot(sh["per_channel"], ctx, verbose=False)
+        if r is None:
             continue
-        expected = tdoa_sw.get(f"0,{b}", 0) - tdoa_sw.get(f"0,{a}", 0)
-        actual = tdoa_sw.get(f"{a},{b}", 0)
-        consistency_sw[f"{a},{b}"] = float(actual - expected)
+        r.update(index=sh.get("index", k + 1), event_class=sh.get("event_class"),
+                 t_sw_s=sh.get("t_sw_s"), t_mb_s=sh.get("t_mb_s"))
+        shots_out.append(r)
+    if len(shots_out) > 1:
+        print(f"[Det Stage 2] {len(shots_out)} shots: TDOA computed for each (see 'shots' in the .json)")
 
     out_json = f"{cfg['output']['basename']}_tdoa.json"
-    dt_sw_to_mb = (ref["t_mb"] - ref["t_sw"]) if (mb_used and sw_used) else None
     meta = dict(
         generated_at_utc=datetime.now(timezone.utc).isoformat(),
         stage="tdoa",
@@ -269,18 +305,22 @@ def main():
         tdoa_method=("peak_timing" if use_peak_timing else method),
         sample_rate_hz=fs,
         n_channels=n_channels,
-        sw_available=bool(tdoa_sw),
-        mb_available=bool(tdoa_mb),
+        sw_available=main_shot["sw_available"],
+        mb_available=main_shot["mb_available"],
         event_class=prep.get("event_class"),
-        dt_sw_to_mb_s=dt_sw_to_mb,
-        dp_sw_ref_channel=ref.get("dP_sw"),
+        dt_sw_to_mb_s=main_shot["dt_sw_to_mb_s"],
+        dp_sw_ref_channel=main_shot["dp_sw_ref_channel"],
         # Stage 1 peak-normalizes the signal; this factor turns dp_* back into full-scale units
         normalization_peak=prep.get("normalization_peak"),
-        t_n_sw_ref_channel=ref.get("T_N"),
-        dp_mb_ref_channel=ref.get("dP_mb"),
+        t_n_sw_ref_channel=main_shot["t_n_sw_ref_channel"],
+        t_n_sw_median=main_shot["t_n_sw_median"],
+        dp_mb_ref_channel=main_shot["dp_mb_ref_channel"],
         tdoa_sw_s=tdoa_sw,
         tdoa_mb_s=tdoa_mb,
-        sw_consistency_residual_s=consistency_sw,
+        sw_consistency_residual_s=main_shot["sw_consistency_residual_s"],
+        mb_consistency_residual_s=main_shot["mb_consistency_residual_s"],
+        n_shots=max(1, len(shots_out)),
+        shots=shots_out,
         config_used=cfg,
     )
     with open(out_json, "w") as f:

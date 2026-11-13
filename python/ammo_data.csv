@@ -1,0 +1,8 @@
+calibre,load,mass_g,v0_mps,barrel,drag_model,bc_lb_in2,d_mm,L_mm,confidence,source
+5.56_NATO,M855 / SS109 62 gr ball,4.02,948,M16A2 20 in,G7,0.151,5.70,23.0,high,Wikipedia 5.56x45mm NATO: SS109/M855 948 m/s (20 in); G7 0.151 measured by US Army BRL; checked Nov 2026
+7.62_NATO,M80 147 gr ball,9.53,838,24 in test barrel,G7,0.200,7.82,28.5,high,Wikipedia 7.62x51mm NATO: M80 147 gr 838 m/s (2750 ft/s spec); G7 0.200 measured by US Army BRL (another source 0.209); checked Nov 2026
+7.62x39,57-N-231 steel-core ball 7.9 g (M43 pattern),7.9,718,AKM,G7,0.152,7.92,26.8,medium,"Wikipedia 7.62x39mm (Russian service load table: 718 m/s; G1 0.304 / G7 0.152), checked Nov 2026"
+7.62x54R,7N1 sniper 9.8 g,9.8,823,SVD 24.4 in,G7,0.206,7.92,32.0,medium,"Wikipedia 7.62x54mmR (7N1: 823 m/s; G1 0.411 / G7 0.206), checked Nov 2026"
+8.6x70,.338 Lapua Magnum 250 gr Scenar,16.2,905,27 in,G7,0.322,8.58,39.4,high,"Lapua 250 gr Scenar GB488 (4318017): G1 0.648 / G7 0.322, 2970 ft/s, 1.551 in long (Ballistic Buddy manufacturer data; Wikipedia .338 LM: 905.2 m/s); checked Nov 2026"
+12.7_NATO,M33 ball 647-661 gr,42.8,887,M2 45 in,G1,0.70,12.95,58.0,medium,"manufacturer G1 for M33-type ball (Ballistic Buddy): Military 647 gr M33 0.670, Federal XM33C 660 gr 0.707 at 2910 ft/s, PMC 660 gr 0.701 -> 0.70; v0 2910 ft/s; checked Nov 2026"
+9mm_Parabellum,124 gr NATO FMJ,8.0,360,pistol 4-5 in,G1,0.15,9.02,15.5,low,from memory; verify

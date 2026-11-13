@@ -1,18 +1,5 @@
-Python Algorithm :
-- Generating Gunshot signal
-  - files :
-    -  gunshot_physic.py -->
-    -  gunshot_generate_clean.py -->
-    -  config.ini 
-  - usage :
-    - python gunshot_generate_clean.py                # uses config.ini in cwd
-    - python gunshot_generate_clean.py my_config.ini
-    - python gunshot_generate_clean.py my_config.ini -o my_shot
-  - output :
-    - 
-Other old ipynb : /old
+Python code of the Gunshot Locator: generator (gs_gen_*), detector (gs_det_*), analysis (ana_*),
+utilities (util_*) and tests (test_*).
 
-utility : /util
-- plot signal in multichannel wav file :
-- create multichannel wav from multiple wav files :
-
+See project.md in this folder for the file list, the pipeline architecture, usage and findings.
+Older scripts and notebooks are in old/ (not maintained).
